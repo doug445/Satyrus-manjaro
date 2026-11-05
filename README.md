@@ -4,7 +4,7 @@
 [![License: MIT](https://img.shields.io/badge/License-MIT-yellow.svg)](LICENSE)
 [![Free and open source](https://img.shields.io/badge/Free%20and%20open%20source-brightgreen.svg)](LICENSE)
 [![Shell: bash](https://img.shields.io/badge/shell-bash-4EAA25.svg)](#requirements)
-[![Tests: 108](https://img.shields.io/badge/tests-108%20passing-brightgreen.svg)](#testing)
+[![Tests: 120](https://img.shields.io/badge/tests-120%20passing-brightgreen.svg)](#testing)
 [![No runtime deps](https://img.shields.io/badge/runtime%20deps-pacman%20%2B%20coreutils-lightgrey.svg)](#requirements)
 
 **Use the AUR on Manjaro without breaking your system.** A small suite of
@@ -501,11 +501,11 @@ packages installed by that package manager.
 
 ## Testing
 
-Two suites, 108 assertions, both run in CI on every push.
+Two suites, 120 assertions, both run in CI on every push.
 
 ```bash
 bash tests/pin-fixture-test.sh          # 59 assertions — no root, no disk, no network
-sudo bash tests/loopback-core-test.sh   # 49 assertions — root; touches no real disk
+sudo bash tests/loopback-core-test.sh   # 61 assertions — root; touches no real disk
 shellcheck -S warning $(git ls-files '*.sh') bin/*
 ```
 

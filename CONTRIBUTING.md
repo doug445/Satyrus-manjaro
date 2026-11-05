@@ -56,7 +56,7 @@ Run what CI runs:
 ```bash
 shellcheck -S warning $(git ls-files '*.sh') bin/*
 bash tests/pin-fixture-test.sh            # expect 59 passed, 0 failed
-sudo bash tests/loopback-core-test.sh     # expect 49 passed, 0 failed
+sudo bash tests/loopback-core-test.sh     # expect 61 passed, 0 failed
 ```
 
 Requirements for any patch:
