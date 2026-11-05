@@ -117,9 +117,17 @@
 #   32. the pre-flight shows a live one-line meter on a terminal, counting every
 #       pending package, never wrapping, and never leaking into --check's
 #       stdout or into redirected output
+#   33. aur-rebuild-check finds the break WITHOUT running ldd: a package's
+#       files are read, never handed to the dynamic loader
+#   34. a DT_NEEDED met through the object's own $ORIGIN RUNPATH — by a library
+#       another package ships — is not a break, and becomes one the moment
+#       that library is gone
+#   35. a same-named library of the wrong machine does not satisfy a DT_NEEDED,
+#       and an object this machine cannot load at all is foreign, not stale
 #
 # Run as root:  sudo bash tests/loopback-core-test.sh
-# Requires: pacman, repo-add, bsdtar (libarchive), losetup, mkfs.ext4, cc.
+# Requires: pacman, repo-add, bsdtar (libarchive), losetup, mkfs.ext4, cc,
+# readelf (binutils).
 # Section 32 also needs script(1) and stty, and is skipped without them.
 # ============================================================================
 set -uo pipefail
@@ -128,7 +136,7 @@ HERE="$(cd "$(dirname "$0")" && pwd)"
 BIN="$(cd "$HERE/.." && pwd)/bin"
 
 [ "$(id -u)" -eq 0 ] || { echo "run as root: sudo bash $0"; exit 1; }
-for c in pacman pacman-conf repo-add bsdtar losetup mkfs.ext4 cc awk grep; do
+for c in pacman pacman-conf repo-add bsdtar losetup mkfs.ext4 cc readelf awk grep; do
     command -v "$c" >/dev/null || { echo "missing tool: $c"; exit 1; }
 done
 
@@ -526,8 +534,8 @@ echo ""
 echo "== 9-12. aur-rebuild-check against real ELF objects =="
 # =============================================================================
 # Real shared objects, built here by cc. libmain.so carries a genuine DT_NEEDED
-# on libdep.so, and libdep.so is not on any library search path, so `ldd` really
-# does report "libdep.so => not found". No ldd output is faked.
+# on libdep.so, and libdep.so is not on any library search path, so the break
+# is real. Nothing about the objects is faked.
 mkenv elf
 ELF="$ENV_DIR/elf"; mkdir -p "$ELF"
 echo 'int dep_fn(void){return 42;}'                 > "$ELF/dep.c"
@@ -537,9 +545,9 @@ cc -shared -fPIC -o "$ELF/libdep.so"  "$ELF/dep.c"  2>/dev/null
 cc -shared -fPIC -o "$ELF/libmain.so" "$ELF/main.c" -L"$ELF" -l:libdep.so 2>/dev/null
 cc -shared -fPIC -o "$ELF/liblone.so" "$ELF/lone.c" 2>/dev/null
 
-if [ ! -f "$ELF/libmain.so" ] || ! ldd "$ELF/libmain.so" 2>/dev/null | grep -q 'libdep.so => not found'; then
+if [ ! -f "$ELF/libmain.so" ] || ! readelf -d "$ELF/libmain.so" 2>/dev/null | grep -q 'NEEDED.*\[libdep\.so\]'; then
     skip "9-11: could not build an ELF with an unresolvable DT_NEEDED on this host"
-    skip "(cc/ldd behaviour differs here; the check itself was not exercised)"
+    skip "(cc behaviour differs here; the check itself was not exercised)"
 else
     # brokenapp ships ONLY the consumer → a genuine break.
     pacman -U --noconfirm "$(mkpkg brokenapp 1.0-1 --files "$ELF/libmain.so")" >/dev/null 2>&1
@@ -551,7 +559,8 @@ else
     fi
 
     # Same missing soname, but the package ships it itself → resolved at
-    # runtime through an \$ORIGIN RPATH, invisible to a standalone ldd.
+    # runtime through the main executable's \$ORIGIN RPATH, which this object's
+    # own dynamic section does not carry.
     pacman -R --noconfirm brokenapp >/dev/null 2>&1
     pacman -U --noconfirm \
         "$(mkpkg bundledapp 1.0-1 --files "$ELF/libmain.so,$ELF/libdep.so")" >/dev/null 2>&1
@@ -588,7 +597,7 @@ fi
 pacman -R --noconfirm cleanapp >/dev/null 2>&1
 echo 'int dep_fn(void); int main(void){return dep_fn();}' > "$ELF/app.c"
 cc -o "$ELF/app" "$ELF/app.c" -L"$ELF" -l:libdep.so 2>/dev/null
-if [ -x "$ELF/app" ] && ldd "$ELF/app" 2>/dev/null | grep -q 'libdep.so => not found'; then
+if [ -x "$ELF/app" ] && readelf -d "$ELF/app" 2>/dev/null | grep -q 'NEEDED.*\[libdep\.so\]'; then
     pacman -U --noconfirm "$(mkpkg optapp 1.0-1 --at opt/optapp --files "$ELF/app")" >/dev/null 2>&1
     out=$(aur-rebuild-check 2>&1); rc=$?
     if [ "$rc" = "1" ] && grep -q 'optapp' <<<"$out"; then
@@ -667,6 +676,88 @@ if [ -f "$ELF/libmain.so" ] && curl -V 2>/dev/null | grep -q '\bfile\b'; then
     pacman -R --noconfirm brokenapp >/dev/null 2>&1
 else
     skip "29: needs the broken ELF from 9-11 and a curl with file:// support"
+fi
+
+# 33. The scan reads; it does not load. Up to 1.7.0 every ELF a foreign package
+# owned was handed to `ldd`, i.e. to the dynamic loader — which ldd(1) itself
+# says never to do with an untrusted executable. An `ldd` that records being
+# called sits first on PATH here: the break must still be found, and the
+# record must stay empty.
+if [ -f "$ELF/libmain.so" ] && readelf -d "$ELF/libmain.so" 2>/dev/null | grep -q 'NEEDED.*\[libdep\.so\]'; then
+    printf '#!/bin/bash\nprintf "%%s\\n" "$*" >> "%s"\nexec /usr/bin/ldd "$@"\n' "$ENV_DIR/ldd.log" > "$SHIM/ldd"
+    chmod +x "$SHIM/ldd"; : > "$ENV_DIR/ldd.log"
+    pacman -U --noconfirm "$ENV_DIR/build/brokenapp-1.0-1-$ARCH.pkg.tar.gz" >/dev/null 2>&1
+    out=$(aur-rebuild-check 2>&1); rc=$?
+    if [ "$rc" = "1" ] && grep -q 'brokenapp' <<<"$out" && [ ! -s "$ENV_DIR/ldd.log" ]; then
+        pass "the break is found by reading the ELF; ldd is never run on a package's files"
+    else
+        fail "ldd was run on a package's files, or the break was missed (rc=$rc, ldd: $(head -2 "$ENV_DIR/ldd.log" | tr '\n' ' '))"
+    fi
+    pacman -R --noconfirm brokenapp >/dev/null 2>&1
+    rm -f "$SHIM/ldd"
+else
+    skip "33: needs the broken ELF from 9-11"
+fi
+
+# 34. The loader's own search order, replayed from the file: an executable
+# whose RUNPATH is $ORIGIN/lib finds a library ANOTHER package put there (so
+# the bundled-library filter of case 10 has nothing to do with it). Take that
+# package away and the same executable is broken.
+cc -o "$ELF/rpapp" "$ELF/app.c" -L"$ELF" -l:libdep.so \
+    -Wl,--enable-new-dtags -Wl,-rpath,'$ORIGIN/lib' 2>/dev/null
+if [ -x "$ELF/rpapp" ] && readelf -d "$ELF/rpapp" 2>/dev/null | grep -q 'RUNPATH.*\$ORIGIN/lib'; then
+    pacman -U --noconfirm \
+        "$(mkpkg rpapp 1.0-1 --at opt/rpapp --files "$ELF/rpapp")" \
+        "$(mkpkg rplibs 1.0-1 --at opt/rpapp/lib --files "$ELF/libdep.so")" >/dev/null 2>&1
+    out=$(aur-rebuild-check 2>&1); rc=$?
+    if [ "$rc" = "0" ]; then
+        pass "a DT_NEEDED met through the object's own \$ORIGIN RUNPATH is not a break"
+    else
+        fail "\$ORIGIN RUNPATH was not searched (rc=$rc): $out"
+    fi
+    pacman -R --noconfirm rplibs >/dev/null 2>&1
+    out=$(aur-rebuild-check 2>&1); rc=$?
+    if [ "$rc" = "1" ] && grep -q 'rpapp.*libdep.so not found' <<<"$out"; then
+        pass "...and is one once the package that shipped the library is gone"
+    else
+        fail "a library missing from the RUNPATH dir was not noticed (rc=$rc): $out"
+    fi
+
+    # 35. A file with the right name and the wrong machine is not the library.
+    # The loader skips it and keeps looking; a check that stopped at `-e` would
+    # call a 64-bit binary satisfied by a 32-bit (here: other-architecture)
+    # libfoo. The fixture is libdep.so with e_machine (2 bytes at offset 18)
+    # rewritten to an architecture this host is not.
+    case "$ARCH" in aarch64) em='\076\000' ;; *) em='\267\000' ;; esac   # EM_X86_64 : EM_AARCH64
+    cp "$ELF/libdep.so" "$ELF/alien-dep.so"
+    printf "$em" | dd of="$ELF/alien-dep.so" bs=1 seek=18 conv=notrunc 2>/dev/null
+    mkdir -p "$ELF/alien"; cp "$ELF/alien-dep.so" "$ELF/alien/libdep.so"
+    pacman -U --noconfirm \
+        "$(mkpkg alienlibs 1.0-1 --at opt/rpapp/lib --files "$ELF/alien/libdep.so")" >/dev/null 2>&1
+    out=$(aur-rebuild-check 2>&1); rc=$?
+    if [ "$rc" = "1" ] && grep -q 'rpapp.*libdep.so not found' <<<"$out"; then
+        pass "a same-named library of the wrong machine does not satisfy a DT_NEEDED"
+    else
+        fail "a wrong-machine library was accepted as the dependency (rc=$rc): $out"
+    fi
+    pacman -R --noconfirm alienlibs rpapp >/dev/null 2>&1
+
+    # ...and the other way round: an object this machine cannot load at all (a
+    # cross-toolchain's target library) with a DT_NEEDED nothing here provides
+    # is foreign, not stale. No rebuild changes that, so it is never flagged.
+    cp "$ELF/libmain.so" "$ELF/alien/libmain.so"
+    printf "$em" | dd of="$ELF/alien/libmain.so" bs=1 seek=18 conv=notrunc 2>/dev/null
+    pacman -U --noconfirm \
+        "$(mkpkg crosslib 1.0-1 --at usr/alien-target/lib --files "$ELF/alien/libmain.so")" >/dev/null 2>&1
+    out=$(aur-rebuild-check 2>&1); rc=$?
+    if [ "$rc" = "0" ]; then
+        pass "an object for a machine this host cannot load is foreign, not stale"
+    else
+        fail "a foreign-architecture object was flagged for rebuild (rc=$rc): $out"
+    fi
+    pacman -R --noconfirm crosslib >/dev/null 2>&1
+else
+    skip "34-35: could not build an executable with an \$ORIGIN RUNPATH here"
 fi
 
 # =============================================================================
