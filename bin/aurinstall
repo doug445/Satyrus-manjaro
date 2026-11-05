@@ -82,17 +82,21 @@
 # PKGBUILDs about to run, which is the only real defence against a hostile
 # maintainer -- a PKGBUILD is code, and no pin check reads intent.
 #
-# After the build, the result is installed with `pacman -U` — that is what
-# you asked for when you typed `aurinstall`. On a terminal it is one [Y/n]
-# prompt away, so you can stop and inspect first; --install and --no-install
-# settle it without a prompt for scripts. Without a terminal and without
-# --install, nothing is installed and the paths are printed.
+# After the build, what you asked for is installed with `pacman -U`, along with
+# the AUR packages it needs at run time. That is all: an AUR makedepend did its
+# job in the chroot, and the split siblings of a package were not requested, so
+# both stay on disk, named. On a terminal it is one [Y/n] prompt away, so you can
+# stop and inspect first; --install and --no-install settle it without a prompt
+# for scripts. Without a terminal and without --install, nothing is installed
+# and the paths are printed.
 #
 # A chroot is build isolation, not a security boundary. The build still
 # runs upstream's build system; this reduces blast radius and fixes which
 # libraries you link against. It does not make a hostile PKGBUILD safe.
 #
 # Env:
+#   AURINSTALL_MODE      auto, chroot or yay. chroot means what --chroot means:
+#                        refuse rather than fall back
 #   AURINSTALL_BRANCH    override the detected Manjaro branch
 #   AURINSTALL_MAX_CHAIN deepest dependency chain the resolver will build (10)
 #   MAKEPKG_CONF         the global makepkg.conf to read PKGDEST from
@@ -129,7 +133,8 @@ for a in "$@"; do
     esac
 done
 case "$mode" in
-    auto|chroot|yay) ;;
+    auto|yay) ;;
+    chroot)   forced=1 ;;      # the variable means what the flag means
     *) echo "[aurinstall] ERROR: AURINSTALL_MODE must be auto, chroot or yay" >&2; exit 2 ;;
 esac
 
@@ -181,21 +186,22 @@ mp_conf_value() {
     return 1
 }
 
-# .SRCINFO for a name. cgit keys on pkgbase, so a split package's own name has
-# no branch there; on that failure the RPC is asked for the pkgbase and the
-# fetch retried once. The RPC round-trip is on the failure path only.
+# .SRCINFO for a name. The RPC says which pkgbase it belongs to, and whether it
+# exists at all: cgit keeps the branches of deleted packages forever, so a name
+# a binary repo carries (`firefox`) could otherwise fetch some long-dead AUR
+# branch and be built from it. The result has to be what was asked for: its
+# pkgbase is about to become a path and a chrootbuild argument.
 fetch_srcinfo() { # $1 = pkg; prints .SRCINFO or fails
     local url body rpc base
-    printf -v url "$AUR_BASE" "$(urlenc "$1")"
-    if body=$(curl -fsSL --max-time 15 "$url" 2>/dev/null) && [[ -n "$body" ]]; then
-        printf '%s\n' "$body"; return 0
-    fi
     printf -v rpc "$AUR_RPC" "$(urlenc "$1")"
-    base=$(curl -fsSL --max-time 10 "$rpc" 2>/dev/null \
-           | /usr/bin/grep -oE '"PackageBase":"[^"]+"' | head -1 | cut -d'"' -f4)
-    [[ -n "$base" && "$base" != "$1" ]] || return 1
+    body=$(curl -fsSL --max-time 10 "$rpc" 2>/dev/null) || return 1
+    [[ "$body" != *'"type":"error"'* ]] || return 1
+    base=$(/usr/bin/grep -oE '"PackageBase":"[^"]+"' <<<"$body" | cut -d'"' -f4 | /usr/bin/sed -n 1p)
+    [[ "$base" =~ ^[A-Za-z0-9@_+][A-Za-z0-9@._+-]*$ ]] || return 1
     printf -v url "$AUR_BASE" "$(urlenc "$base")"
-    curl -fsSL --max-time 15 "$url" 2>/dev/null
+    body=$(curl -fsSL --max-time 15 "$url" 2>/dev/null) && [[ -n "$body" ]] || return 1
+    [[ "$(/usr/bin/awk '$1 == "pkgbase" && $2 == "=" { print $3; exit }' <<<"$body")" == "$base" ]] || return 1
+    printf '%s\n' "$body"
 }
 
 # --- dependency chain resolution --------------------------------------------
@@ -220,12 +226,26 @@ fetch_srcinfo() { # $1 = pkg; prints .SRCINFO or fails
 # CHAIN_MARK doubles as the cycle detector (1 = in progress, 2 = done).
 declare -A CHAIN_MARK=()
 declare -A CHAIN_REQUESTED=()   # pkgbases that stand in for a command-line target
+declare -A CHAIN_RUNDEPS=()     # package name -> the AUR packages it needs at run time
 CHAIN=()
 CHAIN_FAIL=""
 MAX_CHAIN="${AURINSTALL_MAX_CHAIN:-10}"
 
-resolve_chain() { # $1 = package name, $2 = 1 if it is a command-line target
-    local pkg="$1" requested="${2:-0}" srcinfo base dep name
+# Is this depstring met by a binary repository, by name or by provider, with the
+# version constraint honoured? -Sddp resolves it the way a transaction would,
+# without a regex -- package names may contain '+', which broke `-Ssq "^name$"`.
+# A group is not a dependency: -Sddp expands one to its members and says yes,
+# and pacman's resolver does not.
+repo_has() {
+    local name="${1%%[<>=]*}"
+    if pacman -Sg -- "$name" >/dev/null 2>&1 && ! pacman -Si -- "$name" >/dev/null 2>&1; then
+        return 1
+    fi
+    LC_ALL=C pacman -Sddp --noconfirm --print-format '%n' -- "$1" >/dev/null 2>&1
+}
+
+resolve_chain() { # $1 = package name, $2 = 1 if it is a command-line target, $3 = the pkgbase asking
+    local pkg="$1" requested="${2:-0}" parent="${3:-}" srcinfo base dep name kind
     case "${CHAIN_MARK[$pkg]:-}" in
         2) return 0 ;;
         1) CHAIN_FAIL="dependency cycle involving $pkg"; return 1 ;;
@@ -238,6 +258,11 @@ resolve_chain() { # $1 = package name, $2 = 1 if it is a command-line target
     base=$(/usr/bin/awk '$1 == "pkgbase" { print $3; exit }' <<<"$srcinfo")
     [[ -n "$base" ]] || base="$pkg"
     (( requested )) && CHAIN_REQUESTED[$base]=1
+    # A sibling: one pkgbase, one build. That is no cycle, and no chain link.
+    if [[ -n "$parent" && "$base" == "$parent" ]]; then
+        CHAIN_MARK[$pkg]=2
+        return 0
+    fi
     if [[ "$base" != "$pkg" ]]; then
         case "${CHAIN_MARK[$base]:-}" in
             2) CHAIN_MARK[$pkg]=2; return 0 ;;
@@ -245,18 +270,24 @@ resolve_chain() { # $1 = package name, $2 = 1 if it is a command-line target
         esac
         CHAIN_MARK[$base]=1
     fi
-    while IFS= read -r dep; do
+    while IFS=$'\t' read -r kind dep; do
         # strip any version constraint: foo>=1.2 -> foo
         name="${dep%%[<>=]*}"
         [[ -z "$name" ]] && continue
-        # Satisfiable from a binary repository, by name or by provider, with
-        # the version constraint honoured: the chroot's pacman handles it.
-        # -Sddp resolves a depstring the way a transaction would, without a
-        # regex — package names may contain '+', which broke `-Ssq "^name$"`.
-        LC_ALL=C pacman -Sddp --noconfirm --print-format '%n' -- "$dep" >/dev/null 2>&1 && continue
-        resolve_chain "$name" || return 1
-    done < <(/usr/bin/awk -F' = ' '
-        /^[[:space:]]*(depends|makedepends|checkdepends)(_[a-z0-9_]+)? *=/ {print $2}' <<<"$srcinfo")
+        # Satisfiable from a binary repository: the chroot's pacman handles it.
+        repo_has "$dep" && continue
+        # Everything is built, but only `depends` has to be there afterwards:
+        # a global one for every package of the pkgbase, a section's for that
+        # package alone.
+        [[ "$kind" == run ]] && CHAIN_RUNDEPS[$pkg]+=" $name"
+        resolve_chain "$name" 0 "$base" || return 1
+    done < <(/usr/bin/awk -v arch="$(uname -m)" -v want="$pkg" '
+        { sub(/^[[:space:]]+/, ""); sub(/[[:space:]]+$/, ""); p = index($0, " = "); if (!p) next
+          key = substr($0, 1, p - 1); val = substr($0, p + 3)
+          if (key == "pkgname") { sec = val; next }
+          sub("_" arch "$", "", key)
+          if (key !~ /^(depends|makedepends|checkdepends)$/) next
+          printf "%s\t%s\n", (key == "depends" && (sec == "" || sec == want)) ? "run" : "build", val }' <<<"$srcinfo")
     CHAIN_MARK[$pkg]=2
     CHAIN_MARK[$base]=2
     CHAIN+=("$base")
@@ -289,8 +320,9 @@ chroot_gate() {
     for pkg in "${pkgs[@]}"; do
         # A -bin package ships a prebuilt binary. Nothing is compiled, so a
         # clean chroot cannot change the shipped ELF -- it would cost a chroot
-        # sync to achieve nothing.
-        if [[ "$pkg" == *-bin ]]; then
+        # sync to achieve nothing. Asked for by name, it still isolates the
+        # PKGBUILD's own execution, and that is what --chroot asks for.
+        if [[ "$pkg" == *-bin ]] && (( ! forced )); then
             GATE_REASON="$pkg is a -bin package: nothing is compiled, so a chroot cannot change what gets installed (--chroot forces it anyway)"
             return 1
         fi
@@ -317,6 +349,10 @@ if [[ "$mode" != yay ]]; then
 fi
 
 if [[ "$mode" == yay ]]; then
+    # yay builds and installs in one step, so a promise not to install cannot
+    # be kept on this path, and a fallback must not break it quietly.
+    [[ "$install_after" != no ]] \
+        || die "--no-install cannot be kept on the yay path: yay installs what it builds"
     exec yay -S "${pkgs[@]}"
 fi
 
@@ -377,7 +413,7 @@ done
 msg "pin-checking the cloned build chain"
 if ! AUR_SRCINFO_URL="file://$workdir/%s/.SRCINFO" \
      AUR_PKGBUILD_URL="file://$workdir/%s/PKGBUILD" \
-     aur-pin-check --from-aur "${CHAIN[@]}"; then
+     aur-pin-check --pkgbase --from-aur "${CHAIN[@]}"; then
     die "a package in the cloned build chain failed the pin check — nothing was built"
 fi
 
@@ -417,9 +453,12 @@ cb_args+=(-b "$branch")
 
 # Snapshot PKGDEST so we can tell exactly which files this run produced,
 # rather than guessing artifact names from pkgver/pkgrel/arch. Detached
-# signatures share the *.pkg.tar.* pattern and are not installable.
+# signatures share the *.pkg.tar.* pattern and are not installable. The mtime
+# is part of the snapshot: chrootbuild moves its result over whatever is there,
+# and a rebuild of the same version, which is what a rebuild is, leaves every
+# name as it was.
 list_pkgs() {
-    /usr/bin/find "$pkgdest" -maxdepth 1 -name '*.pkg.tar.*' ! -name '*.sig' 2>/dev/null | sort
+    /usr/bin/find "$pkgdest" -maxdepth 1 -name '*.pkg.tar.*' ! -name '*.sig' -printf '%T@ %p\n' 2>/dev/null | sort
 }
 before=$(list_pkgs)
 
@@ -427,7 +466,7 @@ msg "running: sudo chrootbuild ${cb_args[*]}"
 ( cd "$workdir" && sudo chrootbuild "${cb_args[@]}" ) || die "chrootbuild failed"
 
 after=$(list_pkgs)
-mapfile -t built < <(comm -13 <(echo "$before") <(echo "$after"))
+mapfile -t built < <(comm -13 <(echo "$before") <(echo "$after") | /usr/bin/awk 'NF { print $2 }')
 if (( ${#built[@]} == 0 )); then
     die "chrootbuild reported success but produced no package in $pkgdest"
 fi
@@ -446,6 +485,30 @@ msg "${#built[@]} package(s) built against branch '$branch':"
 printf '    %s\n' "${built[@]}" >&2
 echo "" >&2
 
+# What goes on the system: the packages named on the command line, and what
+# they need at run time, followed through the chain. <name>-<ver>-<rel>-<arch>.
+declare -A WANTED=()
+want() {
+    local d
+    [[ -n "${WANTED[$1]:-}" ]] && return 0
+    WANTED[$1]=1
+    for d in ${CHAIN_RUNDEPS[$1]:-}; do want "$d"; done
+}
+for pkg in "${pkgs[@]}"; do want "$pkg"; done
+to_install=(); left_out=()
+for f in "${built[@]}"; do
+    n=${f##*/}; n=${n%-*}; n=${n%-*}; n=${n%-*}
+    if [[ -n "${WANTED[$n]:-}" ]]; then to_install+=("$f"); else left_out+=("$f"); fi
+done
+if (( ${#left_out[@]} > 0 )); then
+    msg "kept, not installed (build dependencies and split packages you did not ask for):"
+    printf '    %s\n' "${left_out[@]}" >&2
+    echo "" >&2
+fi
+if (( ${#to_install[@]} == 0 )) && [[ "$install_after" != no ]]; then
+    die "none of the packages built is one you asked for (${pkgs[*]})"
+fi
+
 # Installing is the point of `aurinstall`, so on a terminal it defaults to yes;
 # the prompt exists so you can stop and inspect first. `read -p` writes its
 # prompt to stderr, so blanket-silencing stderr here would hide the question
@@ -460,7 +523,7 @@ case "$install_after" in
     *)
         ans=n
         if { : </dev/tty; } 2>/dev/null; then
-            read -r -p "[aurinstall] install them now with pacman -U? [Y/n] " ans </dev/tty || ans=n
+            read -r -p "[aurinstall] install ${#to_install[@]} package(s) now with pacman -U? [Y/n] " ans </dev/tty || ans=n
             [[ -z "$ans" ]] && ans=y
         else
             msg "no terminal available — not installing automatically (pass --install to do so)."
@@ -469,12 +532,15 @@ case "$install_after" in
 esac
 case "$ans" in
     y|Y|yes|Yes)
-        sudo pacman -U "${built[@]}"
+        # --install promised no prompt, and pacman has one of its own.
+        pacman_args=(-U)
+        [[ "$install_after" != yes ]] || pacman_args+=(--noconfirm)
+        sudo pacman "${pacman_args[@]}" "${to_install[@]}"
         exit $?
         ;;
     *)
         msg "not installed. To install later:"
-        msg "  sudo pacman -U ${built[*]}"
+        msg "  sudo pacman -U ${to_install[*]}"
         exit 0
         ;;
 esac
