@@ -53,11 +53,14 @@
 #   M5.  `safeup --check` completes without root against the real mirrors...
 #   M6.  ...and the real sync databases are byte-for-byte what they were
 #   M7.  aur-rebuild-check scans every foreign package actually installed and
-#        reaches a verdict...
-#   M8.  ...without ldd being run once
+#        reaches a verdict: one it printed at the end, not the header it opens with
+#   M8.  ...without an `ldd` on PATH being run once (the loopback suite's section
+#        64 is the proof that nothing is loaded by any route)
 #   M9.  against the live AUR, a checksummed release package passes the gate
 #   M10. ...a -git package that tracks a branch is REJECTED
-#   M11. ...and a name the AUR does not have is an ERROR, never a pass
+#   M11. ...a name the AUR does not have is an ERROR, never a pass
+#   M15. ...and the AUR's own index is what decides: a split package is judged
+#        on its pkgbase, not on any stale branch of that name
 #
 # With --build (needs sudo; the first chroot costs ~1.1 GiB under
 # /var/lib/chrootbuild, and an existing one is updated):
@@ -200,7 +203,9 @@ mkdir -p "$WORK/tmp"
 echo "  (refreshes a private database copy and checks every pending upgrade — minutes on a big sync)"
 out=$(TMPDIR="$WORK/tmp" safeup --check 2>&1 </dev/null); rc=$?
 after=$(db_state)
+check_ran=1
 if (( rc == 1 )) && grep -q 'could not refresh the sync databases' <<<"$out"; then
+    check_ran=0
     skip "M5: the mirrors could not be reached, so --check never got to run"
 elif (( rc == 0 || rc == 2 )); then
     pass "safeup --check completed without root (exit $rc: $( (( rc == 0 )) && echo upgrades pending || echo nothing pending))"
@@ -208,7 +213,9 @@ else
     fail "safeup --check failed on a real Manjaro (rc=$rc): $(tail -3 <<<"$out" | tr '\n' ' ')"
 fi
 leftover=$(find "$WORK/tmp" -mindepth 1 -maxdepth 1 2>/dev/null | head -3)
-if [[ "$before" == "$after" && -n "$before" && -z "$leftover" ]]; then
+if (( ! check_ran )); then
+    skip "M6: nothing ran that could have touched the databases"
+elif [[ "$before" == "$after" && -n "$before" && -z "$leftover" ]]; then
     pass "the real sync databases are unchanged, and no snapshot was left behind"
 else
     fail "the pre-flight touched the real sync databases, or left its snapshot (leftover: ${leftover:-none})"
@@ -223,14 +230,15 @@ if (( nforeign > 0 )); then
     mkdir -p "$WORK/shim"
     printf '#!/bin/bash\nprintf "%%s\\n" "$*" >> "%s"\nexec /usr/bin/ldd "$@"\n' "$WORK/ldd.log" > "$WORK/shim/ldd"
     chmod +x "$WORK/shim/ldd"; : > "$WORK/ldd.log"
-    out=$(PATH="$WORK/shim:$PATH" aur-rebuild-check 2>&1); rc=$?
-    if (( rc == 0 || rc == 1 )) && grep -q "scanning $nforeign AUR package" <<<"$out"; then
+    out=$(PATH="$WORK/shim:$PATH" aur-rebuild-check --no-prompt 2>&1 </dev/null); rc=$?
+    if (( rc == 0 || rc == 1 )) && grep -q "scanning $nforeign AUR package" <<<"$out" \
+       && grep -qE 'satisfied library links|need rebuild|prebuilt package|have no source' <<<"$out"; then
         pass "all $nforeign foreign packages scanned (exit $rc: $( (( rc == 0 )) && echo clean || echo "$(grep -c ' — ' <<<"$out") flagged"))"
     else
         fail "aur-rebuild-check did not finish its scan (rc=$rc): $(tail -2 <<<"$out" | tr '\n' ' ')"
     fi
     [[ ! -s "$WORK/ldd.log" ]] \
-        && pass "ldd was not run on any of their files" \
+        && pass "the ldd on PATH was not run on any of their files" \
         || fail "ldd was run $(wc -l < "$WORK/ldd.log") time(s), first on: $(head -1 "$WORK/ldd.log")"
 else
     skip "M7-M8: no foreign packages are installed here"
@@ -261,8 +269,16 @@ if curl -fsS --max-time 15 -o /dev/null 'https://aur.archlinux.org/rpc/v5/info?a
     else
         fail "live AUR: a missing package did not surface as an error (rc=$rc)"
     fi
+    # xen-docs has a dead cgit branch of its own; the live package is pkgbase xen,
+    # which builds a branch. A gate that fetched by name judged a deleted tarball.
+    out=$(AUR_PIN_ALLOWLIST=/dev/null aur-pin-check --from-aur xen-docs 2>&1); rc=$?
+    if (( rc == 1 )) && grep -q 'REJECT xen-docs.*unpinned VCS' <<<"$out"; then
+        pass "live AUR: a split package is judged on its live pkgbase, not a stale branch of its name"
+    else
+        fail "live AUR: xen-docs was judged on something else (rc=$rc): $(head -3 <<<"$out" | tr '\n' ' ')"
+    fi
 else
-    skip "M9-M11: aur.archlinux.org is not reachable from here"
+    skip "M9-M11, M15: aur.archlinux.org is not reachable from here"
 fi
 
 # =============================================================================

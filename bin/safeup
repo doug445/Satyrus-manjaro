@@ -5,7 +5,7 @@
 #   Foreign binary repos (BlackArch, chaotic-aur, etc.) track Arch directly.
 #   When Arch bumps python/ruby/openssl, foreign repos rebuild immediately
 #   but Manjaro lags — new packages declare deps Manjaro can't satisfy.
-#   → safeup holds any foreign-repo package whose Depends aren't satisfiable.
+#   → safeup holds any foreign-repo package with a dependency nothing satisfies.
 #
 # Problem 2 (post-upgrade): When Manjaro catches up (e.g. python 3.12→3.13),
 #   AUR packages built against the old soname break at runtime.
@@ -17,12 +17,19 @@
 # What "satisfiable" means. A pending package is judged by the copy pacman
 # will actually install: the first repository in pacman.conf order that
 # carries the name — a Manjaro repo, if one has it, even when a foreign repo
-# has it too. A foreign package is held when one of its version-constrained
-# dependencies is satisfied neither by what is installed (`pacman -T`) nor by
-# a package this same upgrade will bring in (`pacman -Sddp` against the fresh
-# sync databases). The second half matters: Manjaro's libfoo 2.0 and the
+# has it too. A foreign package is held when one of its dependencies, versioned
+# or not, is satisfied neither by what is installed (`pacman -T`) nor by a
+# package this same upgrade will bring in (`pacman -Sddp` against the fresh sync
+# databases). The second half matters: Manjaro's libfoo 2.0 and the
 # foreign package rebuilt against it usually arrive in the SAME sync, and
 # `pacman -T` alone held every one of those for a cycle.
+#
+# That judges one package at a time, and only the resolver sees the whole
+# upgrade: a satisfier in IgnorePkg, a `libfoo<2` the same upgrade breaks, a new
+# dependency with a constraint of its own, a foreign package that replaces one.
+# So the transaction is then dry-run against the same snapshot, and a foreign
+# package pacman names as the one it cannot satisfy joins the holds. pacman is
+# the thing that knows; a Manjaro package is still never held.
 #
 # The pre-flight never refreshes the real sync database. Refreshing it and
 # then not upgrading — a declined prompt, or --check — is the textbook
@@ -43,10 +50,12 @@
 #     exists to prevent, and only a dependent that declares a versioned dep
 #     on it would be protected by pacman. Y, the AUR package, is the one that
 #     is out of date, so Y is the one left broken until it is rebuilt —
-#     `safeup --aur` rebuilds it straight away, through aurinstall's gate.
-#     If Y comes from a repository, the repositories are mid-sync and
-#     disagree with each other: nothing is changed, and safeup says to wait.
-#     Logged. Capped at 3 retries.
+#     `safeup --aur` rebuilds it straight away, through aurinstall's gate, and
+#     on a terminal safeup offers to. If Y comes from a repository, the
+#     repositories are mid-sync and disagree with each other: nothing is
+#     changed, and safeup says to wait. The same if pacman also says "unable to
+#     satisfy dependency": --assume-installed would quietly answer for that
+#     repository package too. Logged. Capped at 3 retries.
 #
 # Usage:
 #   safeup                # full flow (one master y/n, then unattended)
@@ -63,6 +72,10 @@
 # Log: /var/log/safeup.log
 
 set -uo pipefail
+
+# With COLUMNS exported, pacman wraps -Si fields even into a pipe, and a
+# dependency on a continuation line would simply not be seen.
+unset COLUMNS
 
 LOG="${SAFEUP_LOG:-/var/log/safeup.log}"
 MANJARO_REPOS=(core extra multilib community core-testing extra-testing multilib-testing)
@@ -93,9 +106,33 @@ is_manjaro_repo() {
 # Single master prompt. Skipped if caller passed --noconfirm.
 confirm_proceed() {
     (( noconfirm )) && return 0
-    local ans
-    read -r -p "[safeup] proceed with pacman -Syu? [Y/n] " ans </dev/tty
-    case "$ans" in n|N|no|No) msg "aborted by user"; exit 1 ;; esac
+    local ans=""
+    # `-r /dev/tty` is not enough: the node exists even with no controlling
+    # terminal, and only opening it tells. Empty is the [Y] default; end of file
+    # is nobody answering, and a whole-system upgrade is not a default for that.
+    { : </dev/tty; } 2>/dev/null || die "no terminal to ask on — pass --noconfirm to run unattended"
+    read -r -p "[safeup] proceed with pacman -Syu? [Y/n] " ans </dev/tty \
+        || { msg ""; msg "aborted: no answer"; exit 1; }
+    # Yes is said out loud or by the default. Anything else — `nope`, `q`, a
+    # typo — is not consent to upgrade the system.
+    case "$ans" in
+        ""|y|Y|yes|Yes|YES) ;;
+        *) msg "aborted by user"; exit 1 ;;
+    esac
+}
+
+# Terminal yes/no for an optional next step: default no, and no terminal is a no.
+offer() { # offer "<question>"
+    local ans=""
+    (( noconfirm == 0 )) || return 1
+    { : </dev/tty; } 2>/dev/null || return 1
+    read -r -p "[safeup] $1 [y/N] " ans </dev/tty || return 1
+    [[ "$ans" == [yY]* ]]
+}
+
+# The log is how a hold is chased later, so failing to write it is not silent.
+log_append() {
+    sudo tee -a "$LOG" >/dev/null || msg "WARNING: could not write to $LOG — this was not recorded"
 }
 
 # The --assume-installed argument that stands in for a dependency string, or
@@ -154,15 +191,17 @@ run_pacman_syu() {
         # First attempt uses --noconfirm (master prompt already covered it),
         # and so does any retry that does not need a human. Only a retry
         # flagged interactive strips it, so the prompt that caused the retry
-        # can actually be answered.
+        # can actually be answered. LC_ALL=C because both recovery paths read
+        # pacman's messages: translated, neither would ever fire. sudo keeps
+        # LC_ALL through its default env_check, so no sudoers change is needed.
         if (( retry_interactive == 0 )); then
-            sudo pacman -Syu --noconfirm "${args_now[@]}" 2>&1 | tee "$logfile"
+            LC_ALL=C sudo pacman -Syu --noconfirm "${args_now[@]}" 2>&1 | tee "$logfile"
         else
             local interactive_args=()
             for a in "${args_now[@]}"; do
                 [[ "$a" == "--noconfirm" ]] || interactive_args+=("$a")
             done
-            sudo pacman -Syu "${interactive_args[@]}" 2>&1 | tee "$logfile"
+            LC_ALL=C sudo pacman -Syu "${interactive_args[@]}" 2>&1 | tee "$logfile"
         fi
         rc=${PIPESTATUS[0]}
         (( rc == 0 )) && {
@@ -174,13 +213,12 @@ run_pacman_syu() {
                 for i in "${!rebuild_aur[@]}"; do
                     msg "  - ${rebuild_aur[$i]} (needed ${rebuild_why[$i]})"
                 done
-                msg "rebuild: aurinstall ${rebuild_aur[*]}   (or: safeup --aur, next time)"
                 {
                     echo "=== $(date -Is) needs AUR rebuild: ${#rebuild_aur[@]} ==="
                     for i in "${!rebuild_aur[@]}"; do
                         printf '  %s (needed %s)\n' "${rebuild_aur[$i]}" "${rebuild_why[$i]}"
                     done
-                } | sudo tee -a "$LOG" >/dev/null
+                } | log_append
             }
             return 0
         }
@@ -202,12 +240,36 @@ run_pacman_syu() {
                  | sed -E "s/^breaks dependency '([^']+)' required by /\1 /" | sort -u)
         if [[ -n "$breaks" ]]; then
             local added=0 dep needer stand foreign
+            # A stand-in answers for every package that asks, not only the AUR
+            # one it was added for. A repository package in the same transaction
+            # that pacman cannot satisfy would be waved through by it, and left
+            # broken with nothing on the terminal or in the log.
+            if grep -q "unable to satisfy dependency" "$logfile"; then
+                msg ""
+                msg "pacman also cannot satisfy a package in this upgrade, so no stand-in is safe:"
+                grep -oE "unable to satisfy dependency '[^']+' required by [^[:space:]]+" "$logfile" \
+                    | sed 's/^/  - /' >&2
+                msg ""
+                msg "Nothing was changed. If that is a repository package, a mirror is mid-sync:"
+                msg "wait, or switch mirror (sudo pacman-mirrors --fasttrack), then run safeup again."
+                return "$rc"
+            fi
             foreign=$(pacman -Qmq 2>/dev/null)
             msg ""
             msg "the repo upgrade breaks a dependency of an installed package:"
             while read -r dep needer; do
                 [[ -n "$dep" ]] || continue
                 if ! grep -qxF -- "$needer" <<<"$foreign"; then
+                    local from
+                    from=$(LC_ALL=C pacman -Si -- "$needer" 2>/dev/null \
+                           | awk -F': *' '/^Repository/ && !r { r = $2 } END { print r }')
+                    if [[ -n "$from" ]] && ! is_manjaro_repo "$from"; then
+                        msg "  - $needer needs '$dep', and [$from] has not caught up with Manjaro."
+                        msg ""
+                        msg "Nothing was changed. A Manjaro package is never held back, and only [$from]"
+                        msg "can rebuild this one: wait for it, or remove it (sudo pacman -R $needer)."
+                        return "$rc"
+                    fi
                     msg "  - $needer needs '$dep', and $needer comes from your repositories."
                     msg ""
                     msg "the repositories disagree with each other — a mirror is mid-sync. Nothing was"
@@ -222,12 +284,18 @@ run_pacman_syu() {
                     msg "  aurinstall $needer      or      sudo pacman -R $needer"
                     return "$rc"
                 fi
-                local s already=0
+                # Every dependent is recorded, whether or not its stand-in is
+                # new: two packages on one stale dependency share a stand-in,
+                # and the second still needs its rebuild reported.
+                local s named=0 already=0
+                for s in "${rebuild_aur[@]}"; do [[ "$s" == "$needer" ]] && { named=1; break; }; done
+                if (( ! named )); then
+                    msg "  - $needer (AUR) needs '$dep' — upgrading anyway; $needer gets rebuilt after"
+                    rebuild_aur+=("$needer"); rebuild_why+=("$dep")
+                fi
                 for s in "${assumes[@]}"; do [[ "$s" == "$stand" ]] && { already=1; break; }; done
                 (( already )) && continue
-                msg "  - $needer (AUR) needs '$dep' — upgrading anyway; $needer gets rebuilt after"
                 assumes+=("$stand")
-                rebuild_aur+=("$needer"); rebuild_why+=("$dep")
                 added=$((added + 1))
             done <<<"$breaks"
             if (( added > 0 )); then
@@ -279,9 +347,8 @@ snapshot_sync() {
 }
 
 # --- pre-flight ---------------------------------------------------------------
-# Is this depstring satisfied now, or will it be by this same upgrade?
-dep_satisfiable() {
-    pacman "${PDB[@]}" -T -- "$1" >/dev/null 2>&1 && return 0
+# Will this depstring, unmet by what is installed, be met by this same upgrade?
+coming_in() {
     LC_ALL=C pacman "${PDB[@]}" -Sddp --noconfirm --print-format '%n' -- "$1" >/dev/null 2>&1
 }
 
@@ -315,8 +382,22 @@ hold=()
 hold_why=()
 preflight() {
     local line pkg info repo deps d checked=0 n=0
+    local -a deplist missing
+    # -Qu exits 1 both when nothing is pending and when it could not read the
+    # databases: only the second prints an error, and it is not "nothing pending".
+    local qu qu_err
+    qu_err=$(mktemp -t safeup.XXXXXX) || die "mktemp failed"
+    qu=$(LC_ALL=C pacman "${PDB[@]}" -Qu 2>"$qu_err")
+    if grep -q '^error:' "$qu_err"; then
+        msg "pacman could not read the sync databases:"
+        sed 's/^/  /' "$qu_err" >&2
+        rm -f "$qu_err"
+        die "nothing was checked"
+    fi
+    rm -f "$qu_err"
     # "[ignored]" lines are packages pacman will not touch anyway.
-    mapfile -t pending < <(LC_ALL=C pacman "${PDB[@]}" -Qu 2>/dev/null | grep -v '\[.*\]')
+    pending=()
+    [[ -z "$qu" ]] || mapfile -t pending < <(grep -v '\[.*\]' <<<"$qu")
     (( ${#pending[@]} > 0 && ${#foreign_repos[@]} > 0 )) || return 0
     msg "checking ${#pending[@]} pending upgrade(s) against their repositories..."
     SECONDS=0
@@ -328,16 +409,24 @@ preflight() {
         # pacman.conf order; the FIRST is the copy -Syu installs. Judge that.
         info=$(LC_ALL=C pacman "${PDB[@]}" -Si -- "$pkg" 2>/dev/null | awk 'BEGIN{RS=""} NR==1')
         repo=$(awk -F': *' '/^Repository/ {print $2; exit}' <<<"$info")
-        [[ -n "$repo" ]] || continue
+        # -Qu just named it, so a repository has it: no answer is a failed
+        # query, and a failed query is not a package that passed.
+        [[ -n "$repo" ]] || { meter_clear; die "could not read pending package $pkg from the sync databases"; }
         is_manjaro_repo "$repo" && continue
         checked=$((checked + 1))
         # The whole value after the first ': ' — an epoch's colon survives.
         deps=$(awk '/^Depends On/ { sub(/^[^:]*:[[:space:]]*/, ""); print; exit }' <<<"$info")
         [[ -z "$deps" || "$deps" == "None" ]] && continue
-        for d in $deps; do
-            [[ "$d" == *[\<\>=]* ]] || continue
-            dep_satisfiable "$d" && continue
+        # One pacman for the whole list: -T prints only what is not installed.
+        # Unversioned dependencies count as much as versioned ones. Left in, a
+        # package needing something no repo has stops every other upgrade with
+        # "could not satisfy dependencies".
+        read -ra deplist <<<"$deps"
+        mapfile -t missing < <(pacman "${PDB[@]}" -T -- "${deplist[@]}" 2>/dev/null)
+        for d in "${missing[@]}"; do
+            coming_in "$d" && continue
             meter_clear
+            d=${d//[[:cntrl:]]/?}
             msg "  hold $pkg ($repo) — unsatisfied dep: $d"
             hold+=("$pkg"); hold_why+=("$d")
             break
@@ -345,6 +434,38 @@ preflight() {
     done
     meter_clear
     msg "checked $checked pending foreign upgrade(s) for ABI safety"
+}
+
+# Dry-run the upgrade against the snapshot, holds included, and let pacman name
+# what the checks above could not see. Each round can only add a foreign package
+# and the holds are finite, so this stops; 16 rounds is a guard, not a limit
+# anyone reaches. A failure with nothing foreign to hold is left for the real
+# run, whose recovery paths and refusal are the ones that report it.
+settle_holds() {
+    local out dep who repo h round added known
+    local -a ignore
+    for (( round = 0; round < 16; round++ )); do
+        ignore=()
+        (( ${#hold[@]} == 0 )) || ignore=(--ignore "$(IFS=,; echo "${hold[*]}")")
+        out=$(LC_ALL=C pacman "${PDB[@]}" -Sup --noconfirm --print-format '%n' "${ignore[@]}" 2>&1) && return 0
+        added=0
+        while read -r dep who; do
+            [[ -n "$who" ]] || continue
+            known=0
+            for h in "${hold[@]}"; do [[ "$h" == "$who" ]] && { known=1; break; }; done
+            (( known )) && continue
+            repo=$(LC_ALL=C pacman "${PDB[@]}" -Si -- "$who" 2>/dev/null \
+                   | awk -F': *' '/^Repository/ && !r { r = $2 } END { print r }')
+            [[ -n "$repo" ]] || continue
+            is_manjaro_repo "$repo" && continue
+            dep=${dep//[[:cntrl:]]/?}
+            msg "  hold $who ($repo) — pacman cannot satisfy: $dep"
+            hold+=("$who"); hold_why+=("$dep")
+            added=1
+        done < <(grep -oE "unable to satisfy dependency '[^']+' required by [^[:space:]]+" <<<"$out" \
+                 | sed -E "s/^unable to satisfy dependency '([^']+)' required by /\1 /")
+        (( added )) || return 0
+    done
 }
 
 # --- main -----------------------------------------------------------------------
@@ -359,6 +480,9 @@ else
     (( ${#foreign_repos[@]} > 0 )) && msg "foreign repos tracked: ${foreign_repos[*]}"
     snapshot_sync
     preflight
+    # Not from inside preflight: a foreign package replacing an installed one is
+    # not in -Qu, and an upgrade with nothing else pending would never get here.
+    (( ${#foreign_repos[@]} == 0 )) || settle_holds
 
     if (( check_mode )); then
         if (( ${#pending[@]} == 0 )); then
@@ -380,10 +504,6 @@ else
         msg "holding ${#hold[@]} package(s) until Manjaro catches up"
         joined=$(IFS=,; echo "${hold[*]}")
         ignore_args=(--ignore "$joined")
-        {
-            echo "=== $(date -Is) held: ${#hold[@]} ==="
-            printf '  %s\n' "${hold[@]}"
-        } | sudo tee -a "$LOG" >/dev/null
     else
         msg "no ABI conflicts — all foreign upgrades safe to apply"
     fi
@@ -392,8 +512,35 @@ fi
 # -Syu: the real refresh happens here, in the same transaction as the upgrade.
 msg "running pacman -Syu ${ignore_args[*]-}"
 confirm_proceed
+# Only now: a run the user declined held nothing.
+if (( ${#hold[@]} > 0 )); then
+    {
+        echo "=== $(date -Is) held: ${#hold[@]} ==="
+        printf '  %s\n' "${hold[@]}"
+    } | log_append
+fi
 run_pacman_syu "${ignore_args[@]}" "${pacman_args[@]}"
 pac_rc=$?
+
+# pacman exits 0 after Ctrl-C in the middle of a commit, with part of the upgrade
+# applied. Whatever it says, building AUR packages on a half-finished upgrade is
+# what the next section exists to avoid, so what is still pending is looked at.
+# Your own --ignore is a reason to be, and nothing is claimed then.
+if (( pac_rc == 0 )) && [[ " ${pacman_args[*]-} " != *" --ignore"* ]]; then
+    left=()
+    while read -r name _; do
+        [[ -n "$name" ]] || continue
+        known=0
+        for h in "${hold[@]}"; do [[ "$h" == "$name" ]] && { known=1; break; }; done
+        (( known )) || left+=("$name")
+    done < <(LC_ALL=C pacman -Qu 2>/dev/null | grep -v '\[.*\]')
+    if (( ${#left[@]} > 0 )); then
+        msg ""
+        msg "pacman reported success, but ${#left[@]} upgrade(s) are still pending: ${left[*]:0:5}"
+        msg "if it was interrupted, run safeup again. Nothing further is being done."
+        pac_rc=1
+    fi
+fi
 
 # --- post-upgrade ---------------------------------------------------------------
 # AUR upgrades only after a CLEAN repo upgrade: building AUR packages on top
@@ -425,10 +572,39 @@ if (( pac_rc == 0 && run_aur )); then
     fi
 fi
 
-# AUR rebuild sanity check, last, so it sees the AUR upgrades too.
-if (( pac_rc == 0 )) && command -v aur-rebuild-check >/dev/null 2>&1; then
-    echo
-    aur-rebuild-check || true
+# Without --aur, the packages the upgrade just broke are one answer away.
+if (( pac_rc == 0 && ! run_aur && ${#rebuild_aur[@]} > 0 )); then
+    if ! command -v aurinstall >/dev/null 2>&1; then
+        msg "aurinstall is not on PATH — rebuild ${rebuild_aur[*]} yourself"
+    elif offer "rebuild ${rebuild_aur[*]} now, through the pin check?"; then
+        aurinstall --install "${rebuild_aur[@]}" || aur_rc=1
+    else
+        msg "rebuild later with: aurinstall ${rebuild_aur[*]}"
+    fi
+fi
+
+# AUR rebuild sanity check, last, so it sees the AUR upgrades too. What it finds
+# goes in the log as well; the list comes back through a file, because its stderr
+# belongs to the terminal and its prompt.
+if (( pac_rc == 0 )); then
+    if command -v aur-rebuild-check >/dev/null 2>&1; then
+        echo
+        report=$(mktemp -t safeup.XXXXXX) || die "mktemp failed"
+        scan_args=()
+        (( noconfirm )) && scan_args+=(--no-prompt)
+        AUR_REBUILD_REPORT="$report" aur-rebuild-check "${scan_args[@]}"
+        scan_rc=$?
+        if [[ -s "$report" ]]; then
+            {
+                echo "=== $(date -Is) broken AUR packages: $(wc -l < "$report") ==="
+                sed 's/^/  /' "$report"
+            } | log_append
+        fi
+        rm -f "$report"
+        (( scan_rc != 2 )) || msg "WARNING: the rebuild scan could not run — nothing was checked"
+    else
+        msg "aur-rebuild-check is not on PATH — the rebuild scan was skipped"
+    fi
 fi
 
 (( pac_rc != 0 )) && exit "$pac_rc"
