@@ -35,7 +35,7 @@ Manjaro is infamous for its "two-week delay" on syncing upstream Arch packagesâ€
 **Satyrus-manjaro** is the mentor that fixes the stutter. It bypasses the artificial delays and dependency fractures, forcing Manjaro to correctly resolve, build, and articulate AUR packages without breaking the system.
 
 It is six short bash scripts, no daemon, no runtime dependency beyond pacman,
-coreutils and fakeroot, and 108 tests, 49 of which run real `pacman`
+coreutils and fakeroot, and 120 tests, 61 of which run real `pacman`
 transactions on a loop device.
 
 **Guides:** [AUR package broken after a Manjaro update](https://doug445.github.io/Satyrus-manjaro/aur-package-broken-after-manjaro-update/) Â·
