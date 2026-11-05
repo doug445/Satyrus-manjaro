@@ -6,11 +6,21 @@
 # AUR packages built against the old version still look installed to pacman
 # and break at runtime. Two things are checked for every `pacman -Qmq` package:
 #
-#   1. Every ELF object it owns is run through `ldd`; a `=> not found`
-#      DT_NEEDED is a break. ELF is recognised by its magic bytes, not by file
-#      name: /opt/<app>/<exe> and /usr/lib/<app>/<helper> are where a great
-#      many AUR packages keep their binaries, and a scan keyed on `*.so*` or
-#      `bin/` never opened them.
+#   1. Every ELF object it owns has its dynamic section READ (`readelf -d`),
+#      and each DT_NEEDED soname is looked up the way the loader would look:
+#      the object's own RUNPATH/RPATH ($ORIGIN expanded), then ld.so.cache,
+#      then the default directories. A soname found nowhere is a break. ELF is
+#      recognised by its magic bytes, not by file name: /opt/<app>/<exe> and
+#      /usr/lib/<app>/<helper> are where a great many AUR packages keep their
+#      binaries, and a scan keyed on `*.so*` or `bin/` never opened them.
+#
+#      Nothing is loaded and nothing is run. Up to 1.7.0 this was `ldd`, which
+#      hands every file to the dynamic loader — and ldd(1) says in so many
+#      words never to do that with an untrusted executable. A tool whose
+#      subject is untrusted AUR binaries should not be the thing that maps
+#      them. The lookup is also the object's OWN needs only, where ldd printed
+#      the whole tree: a package is named when its own binary carries the
+#      stale reference, which is the package a rebuild actually fixes.
 #   2. Any file it owns under /usr/lib/python3.X/ for an X that is not the
 #      installed python's. A pure-Python package stranded in the previous
 #      interpreter's site-packages has no ELF to fail — it is simply never
@@ -25,9 +35,9 @@
 # flagged forever — rebuilding a prebuilt repack can never change them):
 #   a. Privately-bundled libs. Flutter/Electron-style apps ship their own
 #      libs in a private dir and load them via an $ORIGIN RPATH on the main
-#      executable. Standalone `ldd` on a plugin .so can't replay that, so it
-#      reports the sibling lib as "not found". If the package itself ships a
-#      file with that soname, it resolves at runtime → not a break.
+#      executable. A plugin .so inspected on its own carries no such path, so
+#      its sibling lib looks "not found". If the package itself ships a file
+#      with that soname, it resolves at runtime → not a break.
 #   b. Optional / absent-by-design deps (e.g. libjvm.so for WARP's unused
 #      Dart-JNI plugin). Listed in $ignore_sonames below.
 #
@@ -61,7 +71,7 @@ done
 
 msg() { (( quiet )) && return 0; printf '[aur-rebuild] %s\n' "$*" >&2; }
 
-command -v ldd  >/dev/null 2>&1 || { echo "ldd missing"  >&2; exit 2; }
+command -v readelf >/dev/null 2>&1 || { echo "readelf missing (install binutils)" >&2; exit 2; }
 command -v pacman >/dev/null 2>&1 || { echo "pacman missing" >&2; exit 2; }
 
 # Sonames that are optional / absent-by-design and never a real break.
@@ -77,8 +87,7 @@ is_ignored_soname() {
 
 # ELF by magic, with a builtin: four bytes read by the shell itself, no fork
 # per file. A script or a data file is rejected here without ever starting
-# ldd for it (which would print "not a dynamic executable" and cost a loader
-# start every time). LC_ALL=C so -n counts bytes, not multibyte characters.
+# readelf for it. LC_ALL=C so -n counts bytes, not multibyte characters.
 is_elf() {
     local m=""
     # Redirections apply left to right: stderr must be silenced BEFORE the
@@ -86,6 +95,129 @@ is_elf() {
     # owned by the package) prints a "Permission denied" from the shell.
     LC_ALL=C IFS= read -r -n 4 -d '' m 2>/dev/null < "$1"
     [[ "$m" == $'\x7fELF' ]]
+}
+
+# --- static ELF inspection ---------------------------------------------------
+# Everything below reads files. None of it loads or executes one.
+
+# One readelf per object: the ELF header and the dynamic section, parsed here.
+#   elf_key     "<class>|<machine>", e.g. "ELF64|Advanced Micro Devices X86-64"
+#   elf_needed  the DT_NEEDED sonames
+#   elf_search  DT_RUNPATH, or DT_RPATH when there is no RUNPATH (the loader
+#               ignores RPATH once a RUNPATH exists)
+# The strings come out of a file nobody vouches for. They are only ever
+# compared, tested with -e, and printed with control characters removed.
+elf_key=""; elf_needed=(); elf_search=""
+elf_read() {
+    local line class="" machine="" rpath="" runpath="" v
+    elf_key=""; elf_needed=(); elf_search=""
+    while IFS= read -r line; do
+        case "$line" in
+            *'(NEEDED)'*'['*']'*)  v=${line#*\[}; elf_needed+=("${v%\]*}") ;;
+            *'(RUNPATH)'*'['*']'*) v=${line#*\[}; runpath=${v%\]*} ;;
+            *'(RPATH)'*'['*']'*)   v=${line#*\[}; rpath=${v%\]*} ;;
+            '  Class:'*)   [[ -z "$class" ]]   && { class=${line#*:};   class=${class//[[:space:]]/}; } ;;
+            '  Machine:'*) [[ -z "$machine" ]] && { machine=${line#*:}; machine=${machine#"${machine%%[![:space:]]*}"}; } ;;
+        esac
+    done < <(LC_ALL=C readelf -hdW -- "$1" 2>/dev/null)
+    [[ -n "$class" && -n "$machine" ]] || return 1
+    elf_key="$class|$machine"
+    elf_search=${runpath:-$rpath}
+}
+
+# The class and machine of a candidate library, memoised by path. A 64-bit
+# object cannot use a 32-bit libfoo.so.1 however well the name matches, and
+# the loader skips such a file and keeps looking; so does this.
+declare -A key_memo=()
+key_of() {
+    local line class="" machine=""
+    if [[ -z "${key_memo[$1]+x}" ]]; then
+        while IFS= read -r line; do
+            case "$line" in
+                '  Class:'*)   class=${line#*:};   class=${class//[[:space:]]/} ;;
+                '  Machine:'*) machine=${line#*:}; machine=${machine#"${machine%%[![:space:]]*}"} ;;
+            esac
+        done < <(LC_ALL=C readelf -hW -- "$1" 2>/dev/null)
+        key_memo[$1]="$class|$machine"
+    fi
+    REPLY=${key_memo[$1]}
+}
+
+# ld.so.cache, read once: soname -> the paths it maps to, one per line.
+declare -A ld_cache=()
+ld_cache_loaded=0
+load_ld_cache() {
+    local line name
+    ld_cache_loaded=1
+    command -v ldconfig >/dev/null 2>&1 || return 0
+    while IFS= read -r line; do
+        [[ "$line" == $'\t'*' => /'* ]] || continue
+        name=${line#$'\t'}; name=${name%% (*}
+        ld_cache[$name]+="${line##* => }"$'\n'
+    done < <(LC_ALL=C ldconfig -p 2>/dev/null)
+}
+
+# Does <soname> resolve system-wide for an object of class/machine <key>?
+# ld.so.cache first, then the loader's built-in directories. Memoised: fifty
+# packages ask for libc.so.6 fifty times over.
+declare -A sys_memo=()
+sys_resolves() {
+    local key=$1 soname=$2 cand d hit=0
+    if [[ -z "${sys_memo[$key|$soname]+x}" ]]; then
+        (( ld_cache_loaded )) || load_ld_cache
+        while IFS= read -r cand; do
+            [[ -n "$cand" && -e "$cand" ]] || continue
+            key_of "$cand"; [[ "$REPLY" == "$key" ]] && { hit=1; break; }
+        done <<<"${ld_cache[$soname]:-}"
+        if (( ! hit )); then
+            for d in /usr/lib /lib /usr/lib64 /lib64 /usr/lib32; do
+                [[ -e "$d/$soname" ]] || continue
+                key_of "$d/$soname"; [[ "$REPLY" == "$key" ]] && { hit=1; break; }
+            done
+        fi
+        sys_memo[$key|$soname]=$hit
+    fi
+    (( sys_memo[$key|$soname] ))
+}
+
+# Can anything on this machine load an object of this class and machine at
+# all? Asked by looking for a libc of the same kind. An object that fails this
+# — a cross-toolchain's target library, a 32-bit binary with no lib32 — is not
+# stale, it is foreign, and no rebuild changes that. (ldd called these "not a
+# dynamic executable" and they were never flagged.)
+loadable() { sys_resolves "$1" libc.so.6; }
+
+# Fills elf_missing with the DT_NEEDED sonames of ELF object $1 that resolve
+# nowhere. Called directly, never through $(...) or a pipe: the memo tables
+# above live in this shell, and a subshell would rebuild them for every file.
+elf_missing=()
+unresolved_needed() {
+    local f=$1 origin=${1%/*} soname d dirs found
+    elf_missing=()
+    elf_read "$f" || return 0
+    (( ${#elf_needed[@]} )) || return 0
+    loadable "$elf_key" || return 0
+    for soname in "${elf_needed[@]}"; do
+        # A DT_NEEDED with a slash is a path, not a search: only an absolute
+        # one can be judged from here.
+        if [[ "$soname" == */* ]]; then
+            [[ "$soname" != /* || -e "$soname" ]] || elf_missing+=("$soname")
+            continue
+        fi
+        found=0
+        if [[ -n "$elf_search" ]]; then
+            IFS=: read -r -a dirs <<<"$elf_search"
+            for d in "${dirs[@]}"; do
+                [[ -n "$d" ]] || continue
+                d=${d//'${ORIGIN}'/$origin};  d=${d//'$ORIGIN'/$origin}
+                d=${d//'${LIB}'/lib};         d=${d//'$LIB'/lib}
+                d=${d//'${PLATFORM}'/$HOSTTYPE}; d=${d//'$PLATFORM'/$HOSTTYPE}
+                [[ -e "$d/$soname" ]] || continue
+                key_of "$d/$soname"; [[ "$REPLY" == "$elf_key" ]] && { found=1; break; }
+            done
+        fi
+        (( found )) || sys_resolves "$elf_key" "$soname" || elf_missing+=("$soname")
+    done
 }
 
 # The directory the installed python owns — "python3.13" for python 3.13.x.
@@ -111,7 +243,8 @@ reasons=()
 for pkg in "${aur_pkgs[@]}"; do
     # Files this package ships, by basename — so we can tell whether a
     # "not found" soname is actually a lib the package bundles itself
-    # (resolved at runtime via $ORIGIN RPATH, invisible to standalone ldd).
+    # (resolved at runtime via the main executable's $ORIGIN RPATH, which
+    # the plugin's own dynamic section does not carry).
     pkg_files=$(pacman -Qlq "$pkg" 2>/dev/null)
     unset pkg_basenames; declare -A pkg_basenames
     while read -r pf; do base="${pf##*/}"; [[ -n "$base" ]] && pkg_basenames["$base"]=1; done <<<"$pkg_files"
@@ -136,13 +269,13 @@ for pkg in "${aur_pkgs[@]}"; do
         # it, and is another package's problem if it does not.
         [[ -f "$f" && ! -L "$f" && -s "$f" && -r "$f" ]] || continue
         is_elf "$f" || continue
-        while read -r soname; do
-            [[ -n "$soname" ]] || continue
+        unresolved_needed "$f"
+        for soname in "${elf_missing[@]}"; do
             [[ -n "${pkg_basenames[$soname]:-}" ]] && continue  # bundled → $ORIGIN-resolved
             is_ignored_soname "$soname" && continue              # optional/absent-by-design
-            reason="$soname not found (needed by $f)"
+            reason="${soname//[[:cntrl:]]/?} not found (needed by ${f//[[:cntrl:]]/?})"
             break
-        done < <(LC_ALL=C ldd -- "$f" 2>/dev/null | awk '/=> not found/{print $1}')
+        done
         [[ -n "$reason" ]] && break
     done <<<"$pkg_files"
 
