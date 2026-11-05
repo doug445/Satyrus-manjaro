@@ -13,16 +13,16 @@
 <meta property="og:type" content="website">
 <meta property="og:site_name" content="Satyrus-manjaro">
 <meta property="og:title" content="Satyrus-manjaro: use the AUR on Manjaro without breaking your system">
-<meta property="og:description" content="pacman and yay wrappers that close the three failures behind most Manjaro AUR breakage: partial upgrades, stale sonames, and unpinned or unverified sources. 137 tests, 66 against real pacman.">
+<meta property="og:description" content="pacman and yay wrappers that close the three failures behind most Manjaro AUR breakage: partial upgrades, stale sonames, and unpinned or unverified sources. 271 tests, full adversarial audit.">
 <meta property="og:url" content="https://doug445.github.io/Satyrus-manjaro/">
 <meta property="og:image" content="https://doug445.github.io/Satyrus-manjaro/card.png">
 <meta property="og:image:width" content="1200">
 <meta property="og:image:height" content="630">
-<meta property="og:image:alt" content="Satyrus-manjaro: use the AUR on Manjaro without breaking your system. Partial-upgrade guard, soname rebuild scan, pinned sources, chrootbuild, 137 tests.">
+<meta property="og:image:alt" content="Satyrus-manjaro: use the AUR on Manjaro without breaking your system. Partial-upgrade guard, soname rebuild scan, pinned sources, chrootbuild, 271 tests, audited.">
 <meta property="og:locale" content="en_GB">
 <meta name="twitter:card" content="summary_large_image">
 <meta name="twitter:title" content="Satyrus-manjaro: use the AUR on Manjaro without breaking your system">
-<meta name="twitter:description" content="pacman and yay wrappers that close the three failures behind most Manjaro AUR breakage: partial upgrades, stale sonames, and unpinned or unverified sources. 137 tests, 66 against real pacman.">
+<meta name="twitter:description" content="pacman and yay wrappers that close the three failures behind most Manjaro AUR breakage: partial upgrades, stale sonames, and unpinned or unverified sources. 271 tests, full adversarial audit.">
 <meta name="twitter:image" content="https://doug445.github.io/Satyrus-manjaro/card.png">
 <script type="application/ld+json">
 {
@@ -40,7 +40,7 @@
       "description": "pacman and yay wrappers for Manjaro: a partial-upgrade guard for foreign repositories, a post-upgrade scan for AUR packages broken by a library or python bump, a pinning policy for PKGBUILD VCS sources and unverified downloads, and chroot builds via manjaro-chrootbuild.",
       "applicationCategory": "UtilitiesApplication",
       "operatingSystem": "Manjaro Linux",
-      "softwareVersion": "1.8.0",
+      "softwareVersion": "2.0.0",
       "dateModified": "2026-11-05",
       "isAccessibleForFree": true,
       "image": "https://doug445.github.io/Satyrus-manjaro/card.png",
@@ -58,6 +58,7 @@
         { "@type": "Question", "name": "Doesn't automating pacman --ignore cause partial upgrades?", "acceptedAnswer": { "@type": "Answer", "text": "No. --ignore suppresses an upgrade, not dependency resolution: pacman still resolves the whole transaction and refuses one that would leave a dependency unsatisfied. The project's test suite proves this against real pacman transactions on every push." } },
         { "@type": "Question", "name": "Does it work on Arch Linux?", "acceptedAnswer": { "@type": "Answer", "text": "It is scoped to Manjaro on purpose. The problem it solves is created by Manjaro's Stable branch trailing Arch; on Arch itself there is no lag to guard against, and none on EndeavourOS, which uses Arch's repositories directly. If you have not installed yet, install EndeavourOS and skip the problem." } },
         { "@type": "Question", "name": "Does it make the AUR safe?", "acceptedAnswer": { "@type": "Answer", "text": "No. Pinning proves you build the commit you reviewed, not that the commit is benign, and a chroot is build isolation, not a security boundary. The pin check also reads the PKGBUILD and refuses one whose .SRCINFO hides a source, but a PKGBUILD is code: read it. yay's diff menu stays on for that. The AUR is not supported by Arch or Manjaro." } },
+        { "@type": "Question", "name": "Has it been audited?", "acceptedAnswer": { "@type": "Answer", "text": "Yes. Version 2.0.0 is the result of a full adversarial audit by Claude Opus 5.5 at maximum effort (\"Opus Max\"), which found and fixed 63 defects. Each finding was reproduced with the real tools, and the audit is published, with findings in CVE form and what is still open, in AUDIT.md in the repository." } },
         { "@type": "Question", "name": "Does it stop me running pacman or yay directly?", "acceptedAnswer": { "@type": "Answer", "text": "No. The checks live in the wrappers (safeup, aurinstall, aurupdate) and run only when you use them. pacman -Syu, yay -S and Pamac still work, and they bypass every check. That is deliberate: a gate you can step around on purpose is one you leave installed. Alias your usual commands to the wrappers." } }
       ]
     }
@@ -85,7 +86,7 @@
       three failures behind almost every Manjaro AUR disaster: the <strong>partial upgrade</strong>
       caused by Manjaro's lag behind Arch, the <strong>stale-soname breakage</strong> after Manjaro
       catches up, and the <strong>unpinned source</strong> that builds something other than
-      what you reviewed. No daemon. 137 tests, 66 of them real <code>pacman</code> transactions,
+      what you reviewed. No daemon. 271 tests, 118 of them real <code>pacman</code> transactions,
       plus an integration suite run on a real Manjaro install.
     </p>
     <div class="cta">
@@ -94,7 +95,7 @@
       <a class="btn" href="https://github.com/doug445/Satyrus-manjaro#what-this-does-not-do">What it does not do</a>
     </div>
     <ul class="facts" aria-label="At a glance">
-      <li>v1.8.0</li><li>Free and open source</li><li>MIT</li><li>bash only</li><li>137 tests</li><li>manjaro-chrootbuild</li>
+      <li>v2.0.0</li><li>Free and open source</li><li>MIT</li><li>bash only</li><li>271 tests</li><li>Full adversarial audit</li><li>manjaro-chrootbuild</li>
       <li>Not affiliated with Manjaro</li>
     </ul>
   </div>
@@ -125,27 +126,35 @@
 <div class="table-scroll"><table>
   <thead><tr><th>Failure</th><th>When it bites</th><th>What closes it</th></tr></thead>
   <tbody>
-    <tr><td><strong>Partial upgrade.</strong> A foreign binary repo (BlackArch, chaotic-aur) rebuilt a package against Arch's newer library; installing it drags in a dependency Manjaro can't satisfy yet.</td><td>While Manjaro is behind</td><td><code>safeup</code> holds only the foreign upgrades whose version-constrained dependencies can't be met yet, and logs every hold. A Manjaro library is never held back.</td></tr>
-    <tr><td><strong>Stale soname.</strong> Manjaro ships the new library, and AUR packages built against the old one die at runtime.</td><td>When Manjaro catches up</td><td><code>aur-rebuild-check</code> names every AUR package that needs rebuilding, python bumps included.</td></tr>
-    <tr><td><strong>Unpinned source.</strong> <code>git+https://…</code> with no commit, or a tarball whose checksum is <code>SKIP</code>: what builds today isn't what you audited.</td><td>Any install or upgrade</td><td><code>aur-pin-check</code> refuses VCS sources not pinned to an immutable revision and downloads that no checksum or signature verifies, in the package and in every AUR dependency it pulls in, and refuses a PKGBUILD whose <code>.SRCINFO</code> hides either.</td></tr>
+    <tr><td><strong>Partial upgrade.</strong> A foreign binary repo (BlackArch, chaotic-aur) rebuilt a package against Arch's newer library; installing it drags in a dependency Manjaro can't satisfy yet.</td><td>While Manjaro is behind</td><td><code>safeup</code> dry-runs the whole upgrade and holds only the foreign packages whose dependencies can't be met yet, and logs every hold. A Manjaro library is never held back.</td></tr>
+    <tr><td><strong>Stale soname.</strong> Manjaro ships the new library, and AUR packages built against the old one die at runtime.</td><td>When Manjaro catches up</td><td><code>aur-rebuild-check</code> names every AUR package that is broken, python and perl bumps included, and offers the rebuild on the spot when a rebuild can work.</td></tr>
+    <tr><td><strong>Unpinned source.</strong> <code>git+https://…</code> with no commit, or a tarball whose checksum is <code>SKIP</code>: what builds today isn't what you audited.</td><td>Any install or upgrade</td><td><code>aur-pin-check</code> refuses VCS sources not pinned to an immutable revision and downloads that no checksum or signature verifies, in the package and in every AUR dependency it pulls in, and refuses a PKGBUILD whose URLs, checksums or keys differ from its <code>.SRCINFO</code>.</td></tr>
   </tbody>
 </table></div>
 
-<h2 id="new">New in 1.8.0</h2>
+<h2 id="new">New in 2.0.0</h2>
+<p>
+  2.0.0 is the result of a <strong>full adversarial audit</strong> by Claude Opus 5.5 at maximum effort
+  ("Opus Max"). It found <strong>63 defects</strong>, 3 of them critical and 18 high, every one reproduced
+  with the real tools, and it fixed them. The method, the findings in CVE form and what is still open are
+  in <a href="https://github.com/doug445/Satyrus-manjaro/blob/main/AUDIT.md">AUDIT.md</a>.
+</p>
 <ul>
-  <li><strong>The rebuild scan no longer runs <code>ldd</code>.</strong> <code>aur-rebuild-check</code>
-    reads each ELF file's dynamic section and resolves its libraries itself, so no AUR-installed
-    binary is handed to the dynamic loader. The <code>ldd</code> man page warns against exactly that.</li>
-  <li><strong>Checksum <code>SKIP</code> is refused.</strong> A tarball whose checksum array says
-    <code>SKIP</code> is as mutable as an unpinned git branch, and it used to pass. A remote source
-    now needs a real checksum or a detached signature, and a PKGBUILD that says <code>SKIP</code>
-    where its <code>.SRCINFO</code> shows a hash is refused too.</li>
-  <li><strong>Tested on Manjaro itself.</strong> A third suite runs on a real Manjaro install:
-    real <code>pacman.conf</code>, real branch detection, a real <code>manjaro-chrootbuild</code>
-    build, and the live AUR.</li>
+  <li><strong>The gate reads a source the way makepkg does.</strong> A pin hidden behind a query, or a
+    <code>#</code> in the filename, used to pass and build a moving ref.</li>
+  <li><strong>The AUR's own index decides what a name is.</strong> cgit keeps the branches of deleted
+    packages, so a split package could be judged on a dead one.</li>
+  <li><strong>The PKGBUILD has to match its <code>.SRCINFO</code>:</strong> every URL, checksum and signing
+    key, compared without running anything. Over 699 real AUR packages it found 6 real disagreements and
+    no false alarms.</li>
+  <li><strong><code>safeup</code> dry-runs the whole upgrade,</strong> so one foreign package that cannot be
+    satisfied no longer stops everything else.</li>
+  <li><strong>"Needs rebuild" is advice that can work.</strong> The scan asks yes or no on the spot, tells a
+    package with no source how to go, and stops flagging what a rebuild cannot change.</li>
+  <li><strong>The aliases install themselves,</strong> if you say so, for bash, zsh, fish, ksh, tcsh and nushell.</li>
 </ul>
-<p>Every fix has a test that fails against 1.7.0.
-  <a href="https://github.com/doug445/Satyrus-manjaro/releases">Release notes</a>.</p>
+<p>105 of the 271 tests fail against 1.8.0.
+  <a href="https://github.com/doug445/Satyrus-manjaro/releases/tag/v2.0.0">Release notes</a>.</p>
 
 <h2 id="quick-start">Quick start</h2>
 <div class="codeblock"><pre><code>git clone https://github.com/doug445/Satyrus-manjaro.git
@@ -156,15 +165,16 @@ safeup --check         # what it would do: no root, nothing changed
 safeup --aur           # repo upgrade, then AUR updates, then the rebuild scan
 aurinstall &lt;pkg&gt;       # yay -S behind the pin-check gate, built in a chroot when possible
 aurupdate              # yay -Sua behind the pin-check gate
-aur-rebuild-check      # what needs rebuilding after a library or python bump</code></pre></div>
-<p><code>deploy.sh</code> asks before installing any missing dependency, and it is idempotent:
-  anything it replaces is backed up first.</p>
+aur-rebuild-check      # what broke after a library or python bump; offers the rebuild</code></pre></div>
+<p><code>deploy.sh</code> asks before installing any missing dependency, offers the short
+  aliases (<code>pupdate</code>, <code>yinstall</code>, <code>yupdate</code>) for bash, zsh, fish, ksh, tcsh and
+  nushell, and is idempotent: anything it replaces is backed up first, and a name you already
+  use stays yours.</p>
 <div class="note">
   <p><strong>The protection is in the wrappers, and only there.</strong> <code>pacman -Syu</code>,
     <code>yay -S</code> and Pamac still work after you install this, and none of them goes through
     any of these checks. Nothing here hooks or replaces the real package managers, on purpose, so
-    the suite protects exactly the commands you run through it. Alias your usual commands to
-    <code>safeup</code>, <code>aurinstall</code> and <code>aurupdate</code>, and keep a bare
+    the suite protects exactly the commands you run through it. Use the aliases, and keep a bare
     <code>yay -S</code> for a deliberate override.</p>
 </div>
 
@@ -226,12 +236,18 @@ aur-rebuild-check      # what needs rebuilding after a library or python bump</c
   <p>No. Pinning proves you build the commit you reviewed, not that the commit is benign, and a chroot is build isolation, not a security boundary. The pin check also reads the PKGBUILD and refuses one whose <code>.SRCINFO</code> hides a source, but a PKGBUILD is code: read it. yay's diff menu stays on for that. The AUR is not supported by Arch or Manjaro.</p>
 </details>
 <details>
+  <summary>Has it been audited?</summary>
+  <p>Yes. Version 2.0.0 is the result of a full adversarial audit by Claude Opus 5.5 at maximum effort ("Opus Max"), which found and fixed 63 defects. Each finding was reproduced with the real tools, and the audit is published, with findings in CVE form and what is still open, in <a href="https://github.com/doug445/Satyrus-manjaro/blob/main/AUDIT.md">AUDIT.md</a>.</p>
+</details>
+<details>
   <summary>Does it stop me running pacman or yay directly?</summary>
   <p>No. The checks live in the wrappers (safeup, aurinstall, aurupdate) and run only when you use them. pacman -Syu, yay -S and Pamac still work, and they bypass every check. That is deliberate: a gate you can step around on purpose is one you leave installed. Alias your usual commands to the wrappers.</p>
 </details>
 
 <p><small>Not for beginners: everything here assumes you can read a PKGBUILD and recover your own
-  system. The project's README says how it was built, AI assistance included.</small></p>
+  system. The project's README says how it was built, AI assistance included. The 2.0.0 full adversarial
+  audit and its fixes are by Claude Opus 5.5 at maximum effort ("Opus Max"):
+  <a href="https://github.com/doug445/Satyrus-manjaro/blob/main/AUDIT.md">read the audit</a>.</small></p>
 </main>
 
 <footer>
@@ -239,7 +255,8 @@ aur-rebuild-check      # what needs rebuilding after a library or python bump</c
     <p><strong>Satyrus-manjaro</strong> by William MacKinnon
       (<a href="https://github.com/doug445">doug445</a>) ·
       <a href="https://github.com/doug445/Satyrus-manjaro">Source on GitHub</a> ·
-      <a href="https://github.com/doug445/Satyrus-manjaro/releases">Releases</a></p>
+      <a href="https://github.com/doug445/Satyrus-manjaro/releases">Releases</a> ·
+      <a href="https://github.com/doug445/Satyrus-manjaro/blob/main/AUDIT.md">Audit</a></p>
     <p>Independent project. Not affiliated with or endorsed by Manjaro or Arch Linux. The AUR is not supported by either.</p>
     <p>Copyright © 2026 William MacKinnon. Code under the MIT licence. Page last updated 5 November 2026.</p>
   </div>
