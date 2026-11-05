@@ -1,6 +1,6 @@
 # Security Policy
 
-**Satyrus-manjaro 1.6.0**
+**Satyrus-manjaro 1.7.0**
  
 ## Supported Versions
 
