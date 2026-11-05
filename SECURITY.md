@@ -1,6 +1,6 @@
 # Security Policy
 
-**Satyrus-manjaro 1.8.0**
+**Satyrus-manjaro 2.0.0**
  
 ## Supported Versions
 
@@ -52,6 +52,8 @@ Instead, please report it privately by emailing the report to: spilled-bowline0j
 Please include as much detail as possible in your email, including steps to
 reproduce.
 
+The findings of the last full audit, in CVE form, are in [AUDIT.md](AUDIT.md).
+
 ## What is in scope
 
 This tooling decides **what gets installed on your machine and from where**. It
@@ -67,10 +69,13 @@ to install. That is the interesting surface:
   fragment or a *currently verifying* allowlist row is a vulnerability, not a
   parsing quirk. So is a remote download that neither a real checksum nor a
   detached signature verifies — a tarball under `SKIP` — and so is a PKGBUILD
-  whose source arrays name an unpinned VCS source, or whose checksum arrays
-  say `SKIP`, where its `.SRCINFO` hides it, getting through. **A skipped check counted as a pass is the same bug**: a package that
-  could not be fetched, parsed or resolved must be reported as an error and must
-  never exit 0.
+  whose source URLs, checksums or signing keys differ from its `.SRCINFO`,
+  getting through. So is any entry the gate reads differently from makepkg:
+  makepkg's reading is the one that builds. **A skipped check counted as a pass
+  is the same bug**: a package that could not be fetched, parsed or resolved must
+  be reported as an error and must never exit 0, and that includes a reply that
+  is not what was asked for, a name the AUR index does not have, and a tool the
+  check depends on failing.
 * **The allowlist failing to notice a moved tag.** The allowlist's entire value
   is that it re-resolves each vetted tag with `git ls-remote` on every run and
   refuses the package the moment the SHA stops matching. A tag that has moved
@@ -100,10 +105,12 @@ to install. That is the interesting surface:
   of a REPOSITORY package — hiding a real repo inconsistency — is in scope; so
   is a pattern that over-matches and waves through breaks nobody reported, and
   anything that causes the retry loop to report success on a transaction that
-  did not happen. So is any path that holds back a repository package.
+  did not happen. So is any path that holds back a repository package, and a
+  stand-in that also answers for a repository package pacman could not satisfy.
 * **A hold or a needed rebuild that is not reported.** Every held package, and
-  every AUR package left needing a rebuild, must reach both the terminal and
-  `/var/log/safeup.log`. A package held silently is a
+  every AUR package left needing a rebuild, whether safeup or the rebuild scan
+  found it, must reach both the terminal and `/var/log/safeup.log`, or the
+  failure to log it must be said. A package held silently is a
   package you will still be running, unpatched, in six months without knowing.
 * **Loading or running what it was asked to inspect.** `aur-rebuild-check`
   reads the ELF header and dynamic section of every file owned by every
@@ -116,8 +123,9 @@ to install. That is the interesting surface:
   terminal unsanitised. `aur-rebuild-check` needs no privileges and should
   never be run as root.
 * **`remove-versioned-kernel` removing the wrong thing.** Its three guards — the
-  name must match `linuxNN`, it must not be the running kernel, and it must not
-  be the last versioned kernel installed — each prevent an unbootable machine.
+  name must match `linuxNN`, it must not be the running kernel or its series,
+  and it must not be the last versioned kernel installed — each prevent an
+  unbootable machine.
   Any of them failing to fire on a system that meets its condition is a serious
   bug. `--noconfirm` suppresses the *prompt* only; a change that lets it
   suppress a guard is a vulnerability.
@@ -132,7 +140,9 @@ to install. That is the interesting surface:
   backup that clobbers the previous backup (so the pre-change state is
   unrecoverable), or an installed file left group- or world-writable, is a
   finding. So is the AUR bootstrap path fetching `yay-bin` without showing the
-  PKGBUILD, or building it as root.
+  PKGBUILD, or building it as root. It also writes to your shell's startup files:
+  anything but its own marked block changing there, an alias of yours being
+  overwritten, or a change made without a backup, is a finding.
 * **Anything world-writable, or any secret in a log.** `/var/log/safeup.log` is
   `0644` by design and holds package names only. Anything else appearing in it
   is a finding.
