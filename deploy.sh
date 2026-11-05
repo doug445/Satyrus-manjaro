@@ -15,6 +15,9 @@
 #   ./deploy.sh --skip-deps      # deploy only, install nothing
 #   ./deploy.sh --deps-only      # install dependencies and stop
 #   ./deploy.sh --with-test-deps # also install what tests/ needs
+#   ./deploy.sh --aliases        # add the shell aliases without asking
+#   ./deploy.sh --no-aliases     # leave shell configuration alone, and do not ask
+#   ./deploy.sh --aliases-only   # offer the shell aliases and stop: no root needed
 #
 # Everything here is idempotent: re-running it is the supported way to
 # redeploy after editing a script in this checkout.
@@ -27,13 +30,18 @@ ASSUME_YES=0
 SKIP_DEPS=0
 DEPS_ONLY=0
 TEST_DEPS=0
+ALIASES=ask
+ALIASES_ONLY=0
 for a in "$@"; do
     case "$a" in
         --yes|-y)        ASSUME_YES=1 ;;
         --skip-deps)     SKIP_DEPS=1 ;;
         --deps-only)     DEPS_ONLY=1 ;;
         --with-test-deps) TEST_DEPS=1 ;;
-        -h|--help)       sed -n '2,18p' "$0" | sed 's/^# \?//'; exit 0 ;;
+        --aliases)       ALIASES=yes ;;
+        --no-aliases)    ALIASES=no ;;
+        --aliases-only)  ALIASES_ONLY=1 ;;
+        -h|--help)       sed -n '2,/^$/p' "$0" | sed 's/^# \?//'; exit 0 ;;
         *) echo "unknown option: $a (try --help)" >&2; exit 2 ;;
     esac
 done
@@ -42,10 +50,13 @@ say()  { printf '[deploy] %s\n' "$*"; }
 warn() { printf '[deploy] WARNING: %s\n' "$*" >&2; }
 die()  { printf '[deploy] ERROR: %s\n' "$*" >&2; exit 1; }
 
-ask() { # ask "<question>" — honours --yes, defaults to no on a closed stdin
+ask() { # ask "<question>" — honours --yes, defaults to no with no terminal
     (( ASSUME_YES )) && return 0
     local ans
-    read -r -p "[deploy] $1 [y/N] " ans </dev/tty 2>/dev/null || return 1
+    # Test the terminal first, and leave stderr alone on the read: `read -p`
+    # writes its prompt there, and silencing it made every question invisible.
+    { : </dev/tty; } 2>/dev/null || return 1
+    read -r -p "[deploy] $1 [y/N] " ans </dev/tty || return 1
     [[ "$ans" == [yY]* ]]
 }
 
@@ -173,12 +184,26 @@ install_yay() {
 CHANGED=0
 UNCHANGED=0
 
-# Current mode / owner:group of a file, or empty if it does not exist.
-stat_mode()  { stat -c '%a'    "$1" 2>/dev/null; }
-stat_owner() { stat -c '%U:%G' "$1" 2>/dev/null; }
+# Current mode / owner:group of a file, or empty if it does not exist. -L: a
+# symlink's own 0777 says nothing about the file it stands for.
+stat_mode()  { stat -Lc '%a'    "$1" 2>/dev/null; }
+stat_owner() { stat -Lc '%U:%G' "$1" 2>/dev/null; }
 
-backup_of() { # echo a backup path that does not already exist
-    printf '%s.bak-%s' "$1" "$(date +%Y%m%d-%H%M%S)"
+# A backup path that does not exist yet: two runs in one second must not leave
+# one copy. A backup never goes beside a file in an include directory: logrotate
+# parses everything in /etc/logrotate.d, and a second copy of a rule is an error
+# on every run from then on.
+backup_of() {
+    local dst=$1 stem n=0 path
+    case "$dst" in
+        /etc/logrotate.d/*)
+            sudo mkdir -p /var/backups/satyrus-manjaro
+            stem="/var/backups/satyrus-manjaro/${dst##*/}.bak-$(date +%Y%m%d-%H%M%S)" ;;
+        *)  stem="$dst.bak-$(date +%Y%m%d-%H%M%S)" ;;
+    esac
+    path=$stem
+    while [[ -e "$path" ]]; do n=$((n + 1)); path="$stem.$n"; done
+    printf '%s' "$path"
 }
 
 install_file() { # install_file <src> <dst> <mode> <owner:group> [--user]
@@ -219,6 +244,119 @@ install_file() { # install_file <src> <dst> <mode> <owner:group> [--user]
 backup_then_install()      { install_file "$1" "$2" "$3" "$4"; }
 backup_then_install_user() { install_file "$1" "$2" 0644 "" --user; }
 
+# ---------------------------------------------------------------------------
+# Shell aliases
+#
+# The protection is in the wrappers and nowhere else, so the short names people
+# actually type are what makes it stick. They go in as a marked block, one per
+# shell, in the file that shell reads for interactive sessions:
+#
+#   bash  ~/.bashrc              zsh   $ZDOTDIR/.zshrc
+#   fish  conf.d/satyrus-manjaro.fish, a file of its own
+#   ksh   ~/.kshrc               tcsh  ~/.tcshrc
+#   nu    nushell's config.nu, when it has one
+#
+# A name you already define stays yours: it is reported and skipped, wherever in
+# that file (or ~/.bash_aliases, ~/.zsh_aliases) it is. A changed file gets the
+# same timestamped backup as everything else here, and running this again
+# replaces the block rather than adding another. Delete the block to undo it.
+# ---------------------------------------------------------------------------
+ALIAS_NAMES=(pupdate yinstall yupdate)
+ALIAS_CMDS=("safeup" "aurinstall" "safeup --aur")
+ALIAS_BEGIN='# >>> Satyrus-manjaro aliases >>>'
+ALIAS_END='# <<< Satyrus-manjaro aliases <<<'
+
+alias_targets() { # one "<shell> <file>" line per shell present here
+    local cfg="${XDG_CONFIG_HOME:-$HOME/.config}"
+    command -v bash >/dev/null 2>&1 && echo "bash $HOME/.bashrc"
+    command -v zsh  >/dev/null 2>&1 && echo "zsh ${ZDOTDIR:-$HOME}/.zshrc"
+    command -v fish >/dev/null 2>&1 && echo "fish $cfg/fish/conf.d/satyrus-manjaro.fish"
+    { command -v ksh || command -v mksh; } >/dev/null 2>&1 && echo "ksh $HOME/.kshrc"
+    command -v tcsh >/dev/null 2>&1 && echo "tcsh $HOME/.tcshrc"
+    [[ -f "$cfg/nushell/config.nu" ]] && echo "nu $cfg/nushell/config.nu"
+    return 0
+}
+
+alias_line() { # alias_line <shell> <name> <command>
+    case "$1" in
+        bash|zsh|ksh) printf "alias %s='%s'\n" "$2" "$3" ;;
+        fish|tcsh)    printf "alias %s '%s'\n" "$2" "$3" ;;
+        nu)           printf 'alias %s = %s\n' "$2" "$3" ;;
+    esac
+}
+
+# Is <name> already something in these files? `alias x=`, `alias x '...'`,
+# `alias x = `, `x() {` and `function x`.
+alias_defined() { # alias_defined <name> <file>...
+    local name=$1; shift
+    grep -qE "^[[:space:]]*(alias[[:space:]]+${name}([=[:space:]]|$)|${name}[[:space:]]*\(\)|function[[:space:]]+${name}([[:space:]({]|$))" \
+        "$@" 2>/dev/null
+}
+
+write_aliases() { # write_aliases <shell> <file>
+    local shell=$1 rc=$2 i name tmp rest others=() body="" taken=() bk
+    mkdir -p "$(dirname "$rc")"
+    rest=$(mktemp); tmp=$(mktemp)
+    if [[ -f "$rc" ]]; then
+        awk -v b="$ALIAS_BEGIN" -v e="$ALIAS_END" \
+            '$0 == b { skip = 1; next } $0 == e { skip = 0; next } !skip' "$rc" > "$rest"
+    fi
+    case "$shell" in
+        bash) others=("$HOME/.bash_aliases") ;;
+        zsh)  others=("$HOME/.zsh_aliases") ;;
+    esac
+    for i in "${!ALIAS_NAMES[@]}"; do
+        name=${ALIAS_NAMES[$i]}
+        if alias_defined "$name" "$rest" "${others[@]}"; then
+            taken+=("$name")
+        else
+            body+=$(alias_line "$shell" "$name" "${ALIAS_CMDS[$i]}")$'\n'
+        fi
+    done
+    {
+        cat "$rest"
+        [[ -z "$body" ]] || printf '%s\n%s%s\n' "$ALIAS_BEGIN" "$body" "$ALIAS_END"
+    } > "$tmp"
+    if [[ -f "$rc" ]] && cmp -s "$tmp" "$rc"; then
+        echo "  unchanged  $rc"
+    elif [[ ! -f "$rc" && -z "$body" ]]; then
+        :
+    else
+        if [[ -f "$rc" ]]; then
+            bk=$(backup_of "$rc")
+            cp -p "$rc" "$bk"
+            echo "  backup     $rc -> $bk"
+        fi
+        cat "$tmp" > "$rc"       # in place: a symlinked rc file stays a symlink
+        echo "  aliases    $rc"
+    fi
+    (( ${#taken[@]} == 0 )) || echo "  yours      ${taken[*]} already defined for $shell — left alone"
+    rm -f "$rest" "$tmp"
+}
+
+install_aliases() {
+    local shell rc rows=() shells=()
+    [[ "$ALIASES" != no ]] || return 0
+    while read -r shell rc; do rows+=("$shell $rc"); shells+=("$shell"); done < <(alias_targets)
+    (( ${#rows[@]} > 0 )) || return 0
+    if [[ "$ALIASES" == ask ]] \
+       && ! ask "add the aliases ${ALIAS_NAMES[*]} for ${shells[*]}?"; then
+        say "aliases not added. ./deploy.sh --aliases-only offers them again any time."
+        return 0
+    fi
+    say "installing shell aliases..."
+    for row in "${rows[@]}"; do
+        read -r shell rc <<<"$row"
+        write_aliases "$shell" "$rc"
+    done
+    say "  pupdate = safeup, yinstall = aurinstall, yupdate = safeup --aur. New shells pick them up."
+}
+
+if (( ALIASES_ONLY )); then
+    install_aliases
+    exit 0
+fi
+
 (( SKIP_DEPS )) || install_deps
 (( DEPS_ONLY )) && { say "--deps-only: stopping before deployment"; exit 0; }
 
@@ -236,6 +374,14 @@ sudo install -d -m 0755 -o root -g root /etc/aur-pin-check
 # Overwriting an existing one would silently discard those decisions.
 if [[ -f /etc/aur-pin-check/allowlist.conf ]]; then
     say "  /etc/aur-pin-check/allowlist.conf exists — left alone (it holds your vetting decisions)"
+    # Its content is yours. Who can write to it is not a preference: a row here
+    # switches the gate off for a package.
+    if [[ "$(stat_mode /etc/aur-pin-check/allowlist.conf)" != 644 \
+          || "$(stat_owner /etc/aur-pin-check/allowlist.conf)" != root:root ]]; then
+        sudo chown root:root /etc/aur-pin-check/allowlist.conf
+        sudo chmod 0644 /etc/aur-pin-check/allowlist.conf
+        say "  ...but it was writable by others: reset to root:root 0644"
+    fi
 else
     backup_then_install "$HERE/etc/aur-pin-check/allowlist.conf" \
         "/etc/aur-pin-check/allowlist.conf" 0644 root:root
@@ -270,7 +416,9 @@ mkdir -p "$UNIT_DIR"
 # leave an already-correct unit untouched.
 RENDERED=$(mktemp)
 trap 'rm -f "$RENDERED"' EXIT
-sed "s|@@SUITE_DIR@@|$HERE|g" "$HERE/systemd/user/safeup-drift-audit.service" > "$RENDERED"
+# Bash, not sed: a checkout path may hold `|` or `&`, which mean something to it.
+UNIT=$(<"$HERE/systemd/user/safeup-drift-audit.service")
+printf '%s\n' "${UNIT//@@SUITE_DIR@@/"$HERE"}" > "$RENDERED"
 before=$CHANGED
 install_file "$RENDERED" "$UNIT_DIR/safeup-drift-audit.service" 0644 "" --user
 install_file "$HERE/systemd/user/safeup-drift-audit.timer" \
@@ -299,6 +447,8 @@ else
     warn "  no user systemd session here; units installed but not enabled"
 fi
 
+install_aliases
+
 echo ""
 if (( CHANGED == 0 )); then
     say "done — nothing changed ($UNCHANGED file(s) already up to date)."
@@ -308,5 +458,3 @@ fi
 say "Verify with:"
 echo "         ls -la /usr/local/bin/{safeup,aur-*,aurinstall,aurupdate,remove-versioned-kernel}"
 echo "         systemctl --user list-timers safeup-drift-audit.timer"
-say "reminder: shell aliases live in ~/.zshrc and ~/.bashrc — deploy does NOT touch them."
-say "          suggested: alias pupdate='safeup'  yinstall='aurinstall'  yupdate='safeup ; aurupdate'"

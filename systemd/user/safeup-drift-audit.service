@@ -6,7 +6,7 @@ Documentation=https://github.com/doug445/Satyrus-manjaro
 
 [Service]
 Type=oneshot
-ExecStart=@@SUITE_DIR@@/audit-drift.sh
+ExecStart="@@SUITE_DIR@@/audit-drift.sh"
 # Advisory only: drift is reported, never corrected. A failing audit must not
 # look like a failing system, so a non-zero exit is not an error here.
 SuccessExitStatus=0 1 2

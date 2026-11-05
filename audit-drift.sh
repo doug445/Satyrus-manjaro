@@ -24,6 +24,7 @@ pairs=(
     "bin/aurupdate           /usr/local/bin/aurupdate"
     "bin/remove-versioned-kernel  /usr/local/bin/remove-versioned-kernel"
     "etc/logrotate.d/safeup  /etc/logrotate.d/safeup"
+    "systemd/user/safeup-drift-audit.timer  $HOME/.config/systemd/user/safeup-drift-audit.timer"
 )
 
 # Deliberately NOT audited:
