@@ -71,9 +71,9 @@ echo "[drift-audit] $(date -Is) — drift=$drift missing=$missing"
 
 # Desktop notification if we have a graphical session.
 if [[ -n "${DBUS_SESSION_BUS_ADDRESS:-}" ]] && command -v notify-send >/dev/null; then
-    msg="SafeAUR drift: ${#mismatches[@]} file(s) differ"
+    msg="Satyrus-manjaro drift: ${#mismatches[@]} file(s) differ"
     (( missing )) && msg+=" + missing files"
-    notify-send -u critical "Manjaro SafeAUR Updater audit" "$msg
+    notify-send -u critical "Satyrus-manjaro audit" "$msg
 Review $HERE/ vs deployed."
 fi
 

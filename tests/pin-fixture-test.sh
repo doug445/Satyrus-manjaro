@@ -1,7 +1,7 @@
 #!/bin/bash
 #
-# Manjaro SafeAUR Updater — safe pacman/AUR updates on Manjaro
-# https://github.com/doug445/manjaro-safeaur-updater
+# Satyrus-manjaro — safe pacman/AUR updates on Manjaro
+# https://github.com/doug445/Satyrus-manjaro
 #
 # Copyright (c) 2026 William MacKinnon <spilled-bowline0j@icloud.com>
 # SPDX-License-Identifier: MIT
@@ -178,7 +178,7 @@ export WORK_PACMAN_LOG="$WORK/pacman.log"
 export MAKEPKG_CONF=/dev/null
 cat > "$WORK/shim/id" <<'SHIM'
 #!/bin/bash
-[[ "${1:-}" == -un ]] && { echo safeaur-fixture-user; exit 0; }
+[[ "${1:-}" == -un ]] && { echo satyrus-fixture-user; exit 0; }
 exec /usr/bin/id "$@"
 SHIM
 chmod +x "$WORK/shim/id"

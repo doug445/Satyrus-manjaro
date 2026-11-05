@@ -1,5 +1,5 @@
 #!/bin/bash
-# deploy.sh — install the Manjaro SafeAUR Updater from this source-of-record.
+# deploy.sh — install Satyrus-manjaro from this source-of-record.
 #
 # Installs any missing dependency, then mirrors files from ./bin, ./etc,
 # ./config and ./systemd into their deployed locations.

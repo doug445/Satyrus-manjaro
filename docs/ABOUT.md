@@ -1,4 +1,4 @@
-# About the Manjaro SafeAUR Updater
+# About Satyrus-manjaro
 
 ## What it is
 

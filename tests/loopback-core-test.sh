@@ -1,7 +1,7 @@
 #!/bin/bash
 #
-# Manjaro SafeAUR Updater — safe pacman/AUR updates on Manjaro
-# https://github.com/doug445/manjaro-safeaur-updater
+# Satyrus-manjaro — safe pacman/AUR updates on Manjaro
+# https://github.com/doug445/Satyrus-manjaro
 #
 # Copyright (c) 2026 William MacKinnon <spilled-bowline0j@icloud.com>
 # SPDX-License-Identifier: MIT
@@ -235,7 +235,7 @@ mkpkg() {
     rm -rf "$d"; mkdir -p "$d/$at"
     {
         echo "pkgname = $name"; echo "pkgbase = $name"; echo "pkgver = $ver"
-        echo "pkgdesc = SafeAUR loopback fixture"
+        echo "pkgdesc = Satyrus-manjaro loopback fixture"
         echo "url = https://example.invalid"
         echo "builddate = 1700000000"; echo "packager = safeup-test"
         echo "size = 0"; echo "arch = $ARCH"
@@ -691,7 +691,7 @@ K66="$ENV_DIR/build/k66"; mkdir -p "$K66/usr/lib/modules/$RUNNING"
 echo placeholder > "$K66/usr/lib/modules/$RUNNING/.keep"
 {
     echo "pkgname = linux66"; echo "pkgbase = linux66"; echo "pkgver = 6.6.1-1"
-    echo "pkgdesc = SafeAUR loopback fixture"
+    echo "pkgdesc = Satyrus-manjaro loopback fixture"
     echo "url = https://example.invalid"
     echo "builddate = 1700000000"; echo "packager = safeup-test"
     echo "size = 0"; echo "arch = $ARCH"

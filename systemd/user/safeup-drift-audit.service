@@ -1,6 +1,6 @@
 [Unit]
-Description=Manjaro SafeAUR Updater source-of-record drift audit
-Documentation=https://github.com/doug445/manjaro-safeaur-updater
+Description=Satyrus-manjaro source-of-record drift audit
+Documentation=https://github.com/doug445/Satyrus-manjaro
 # @@SUITE_DIR@@ is rewritten to the real checkout path by deploy.sh. The unit
 # is shipped as a template because the checkout can live anywhere.
 

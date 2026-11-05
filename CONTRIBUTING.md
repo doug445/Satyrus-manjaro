@@ -1,6 +1,6 @@
 # Contributing
 
-**Manjaro SafeAUR Updater 1.6.0**
+**Satyrus-manjaro 1.6.0**
 
 This project gates what gets installed on your machine. Every added code path is
 a path that can wave something through, and there is one maintainer to be sure
@@ -40,7 +40,7 @@ Include:
 
 1. what you ran, verbatim, and what you expected;
 2. `pacman-conf --repo-list` — which third-party repos you have enabled;
-3. `git -C /path/to/manjaro-safeaur-updater describe --tags --always --dirty`;
+3. `git -C /path/to/Satyrus-manjaro describe --tags --always --dirty`;
 4. the relevant lines of `/var/log/safeup.log`, and the terminal output;
 5. for a pin-check bug, the package name and the `source =` lines from
    `curl -s "https://aur.archlinux.org/cgit/aur.git/plain/.SRCINFO?h=<pkg>"`.
