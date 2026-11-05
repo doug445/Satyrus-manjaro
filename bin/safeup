@@ -285,16 +285,45 @@ dep_satisfiable() {
     LC_ALL=C pacman "${PDB[@]}" -Sddp --noconfirm --print-format '%n' -- "$1" >/dev/null 2>&1
 }
 
+# A one-line dd/fsck-style meter for the per-package loop, which takes minutes
+# on a big sync and otherwise looks hung. It goes to stderr so --check's stdout
+# stays parseable, and only to a terminal so redirected output never collects
+# control characters. Frames are cut to the terminal width: a line that wraps
+# cannot be redrawn with \r and would scroll instead.
+meter_clear() {
+    [[ -t 2 ]] && printf '\r\033[K' >&2
+    return 0
+}
+
+meter() { # meter <n> <total> <pkg>; SECONDS must count from the first package
+    [[ -t 2 ]] || return 0
+    local n=$1 total=$2 pkg=$3 width=20 cols rem bar frame eta="--:--"
+    read -r _ cols < <(stty size <&2 2>/dev/null)
+    (( ${cols:-0} > 0 )) || cols=80
+    if (( n > 1 && SECONDS > 0 )); then
+        rem=$(( SECONDS * (total - n + 1) / (n - 1) ))
+        printf -v eta '%d:%02d' $(( rem / 60 )) $(( rem % 60 ))
+    fi
+    printf -v bar '%*s' $(( n * width / total )) ''
+    printf -v frame '[safeup] checking %d/%d %d%% ETA %s [%-*s] %s' \
+        "$n" "$total" $(( n * 100 / total )) "$eta" "$width" "${bar// /=}" "$pkg"
+    printf '\r\033[K%s' "${frame:0:cols-1}" >&2
+}
+
 pending=()
 hold=()
 hold_why=()
 preflight() {
-    local line pkg info repo deps d checked=0
+    local line pkg info repo deps d checked=0 n=0
     # "[ignored]" lines are packages pacman will not touch anyway.
     mapfile -t pending < <(LC_ALL=C pacman "${PDB[@]}" -Qu 2>/dev/null | grep -v '\[.*\]')
     (( ${#pending[@]} > 0 && ${#foreign_repos[@]} > 0 )) || return 0
+    msg "checking ${#pending[@]} pending upgrade(s) against their repositories..."
+    SECONDS=0
     for line in "${pending[@]}"; do
         pkg=${line%% *}
+        n=$((n + 1))
+        meter "$n" "${#pending[@]}" "$pkg"
         # -Si prints one block per repository carrying the name, in
         # pacman.conf order; the FIRST is the copy -Syu installs. Judge that.
         info=$(LC_ALL=C pacman "${PDB[@]}" -Si -- "$pkg" 2>/dev/null | awk 'BEGIN{RS=""} NR==1')
@@ -308,11 +337,13 @@ preflight() {
         for d in $deps; do
             [[ "$d" == *[\<\>=]* ]] || continue
             dep_satisfiable "$d" && continue
+            meter_clear
             msg "  hold $pkg ($repo) — unsatisfied dep: $d"
             hold+=("$pkg"); hold_why+=("$d")
             break
         done
     done
+    meter_clear
     msg "checked $checked pending foreign upgrade(s) for ABI safety"
 }
 

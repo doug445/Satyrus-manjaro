@@ -114,9 +114,13 @@
 #       stops the run with nothing changed: nothing can stand in for that
 #   31. an installed alternate interpreter (python311 from the AUR) and the
 #       modules built for it are not flagged as a stale python tree
+#   32. the pre-flight shows a live one-line meter on a terminal, counting every
+#       pending package, never wrapping, and never leaking into --check's
+#       stdout or into redirected output
 #
 # Run as root:  sudo bash tests/loopback-core-test.sh
 # Requires: pacman, repo-add, bsdtar (libarchive), losetup, mkfs.ext4, cc.
+# Section 32 also needs script(1) and stty, and is skipped without them.
 # ============================================================================
 set -uo pipefail
 
@@ -872,6 +876,95 @@ if grep -q 'hold toolz' <<<"$out" && pacman -Dk >/dev/null 2>&1; then
     pass "after a real safeup hold, pacman -Dk still reports a consistent system"
 else
     fail "safeup's hold left the system inconsistent, or did not hold at all"
+fi
+
+# =============================================================================
+echo ""
+echo "== 32. the pre-flight shows a live meter on a terminal, and only there =="
+# =============================================================================
+# The pre-flight forks pacman once per pending package, so a big sync sat
+# silent for minutes and looked hung. A terminal-only feature cannot be proved
+# through a pipe, so these run safeup on a real pty with script(1).
+meter_tty() { # meter_tty <cols> <typescript> <stdout-file>
+    SHELL=/bin/bash script -qec "stty cols $1; safeup --check >'$3'" "$2" </dev/null >/dev/null 2>&1
+}
+meter_frames() { # every frame the terminal drew, one per line, erase codes gone
+    tr '\r' '\n' <"$1" | sed 's/\x1b\[K//g' | grep -aE '^\[safeup\] checking [0-9]+/[0-9]+'
+}
+if ! command -v script >/dev/null || ! command -v stty >/dev/null; then
+    skip "script(1) or stty missing: the meter needs a real pty to be tested"
+else
+    mkenv meter blackarch
+    LONGP=averylongpackagename-that-cannot-fit-on-a-forty-column-line
+    publish "$REPO_M" extra "$(mkpkg libm1 1.0-1)"
+    MPKGS=("$ENV_DIR/build/libm1-1.0-1-$ARCH.pkg.tar.gz")
+    for p in "$LONGP" mone mtwo; do
+        MPKGS+=("$(mkpkg "$p" 1.0-1)")
+        publish "$REPO_M" extra "$(mkpkg "$p" 2.0-1)"
+    done
+    MPKGS+=("$(mkpkg toolm 1.0-1 "libm1>=1.0")" "$(mkpkg toolok 1.0-1)")
+    publish "$REPO_F" blackarch "$(mkpkg toolm 2.0-1 "libm1>=2.0")" "$(mkpkg toolok 2.0-1)"
+    pacman -U --noconfirm "${MPKGS[@]}" >/dev/null 2>&1
+
+    # A second per package, so the ETA has real elapsed time to work from.
+    sed -i '2i case " $* " in *" -Si "*) sleep 1 ;; esac' "$SHIM/pacman"
+    TTY40="$ENV_DIR/tty40.log"; OUT40="$ENV_DIR/stdout40.txt"
+    meter_tty 40 "$TTY40" "$OUT40"; rc=$?
+    sed -i '2d' "$SHIM/pacman"
+    frames=$(meter_frames "$TTY40")
+
+    [ "$rc" = "0" ] && grep -q 'would hold' "$OUT40" \
+        && pass "--check on a terminal still reports the hold and exits 0" \
+        || fail "--check on a terminal went wrong (rc=$rc): $(tail -3 "$OUT40" | tr '\n' ' ')"
+    missing=""
+    for n in 1 2 3 4 5; do grep -q "checking $n/5 " <<<"$frames" || missing+=" $n/5"; done
+    [ -z "$missing" ] \
+        && pass "every pending package is counted, Manjaro-repo ones included" \
+        || fail "meter never showed:$missing"
+    # One physical line per hold, plus the one the meter finishes on.
+    lines=$(grep -ac 'checking [0-9]/5' "$TTY40")
+    [ "$lines" = "2" ] \
+        && pass "frames redraw in place instead of scrolling" \
+        || fail "frames spread over $lines physical lines, expected 2"
+    wide=$(awk 'length($0) > 39' <<<"$frames")
+    [ -z "$wide" ] \
+        && pass "no frame reaches the edge of a 40-column terminal, so none can wrap" \
+        || fail "frame too wide for 40 columns: $(head -1 <<<"$wide")"
+    grep -q 'checking 1/5 .*ETA --:--' <<<"$frames" \
+        && pass "ETA is withheld until there is something to estimate from" \
+        || fail "first frame has no placeholder ETA: $(head -1 <<<"$frames")"
+    grep -qE 'checking 3/5 .*ETA 0:0[0-9]' <<<"$frames" \
+        && pass "ETA becomes a real figure once packages have been timed" \
+        || fail "no numeric ETA by 3/5: $(sed -n 3p <<<"$frames")"
+    grep -qaF $'\r\033[K[safeup]   hold toolm' "$TTY40" \
+        && pass "a hold message erases the meter first, so it is not glued to a frame" \
+        || fail "hold message was written over a live meter line"
+    grep -qaF $'\r\033[K[safeup] checked 2 pending' "$TTY40" \
+        && pass "the meter is erased when the pre-flight ends" \
+        || fail "the last frame was left on screen"
+    if ! grep -q $'\r' "$OUT40" && ! grep -q 'checking [0-9]' "$OUT40"; then
+        pass "--check's stdout carries no meter, so it stays parseable"
+    else
+        fail "meter leaked into --check's stdout"
+    fi
+
+    TTY100="$ENV_DIR/tty100.log"
+    meter_tty 100 "$TTY100" "$ENV_DIR/stdout100.txt"
+    frames=$(meter_frames "$TTY100")
+    grep -q 'checking 5/5 100% .*\[====================\]' <<<"$frames" \
+        && pass "the bar is full at 100%" \
+        || fail "no full bar at 5/5: $(tail -1 <<<"$frames")"
+    grep -q ' toolok$' <<<"$frames" \
+        && pass "the meter names the package being checked" \
+        || fail "no package name in: $(tail -1 <<<"$frames")"
+
+    out=$(safeup --check 2>&1 </dev/null)
+    if grep -q 'checking 5 pending upgrade' <<<"$out" \
+       && ! grep -q $'\r' <<<"$out" && ! grep -q $'\033' <<<"$out"; then
+        pass "redirected output gets one plain line and no control characters"
+    else
+        fail "redirected output wrong: $(head -3 <<<"$out" | cat -v | tr '\n' ' ')"
+    fi
 fi
 
 echo ""
