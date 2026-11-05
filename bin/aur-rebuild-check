@@ -29,41 +29,75 @@
 #      A tree whose interpreter is still installed is live, not stale:
 #      python311 from the AUR owns /usr/lib/python3.11/ by design, and so do
 #      the modules built for it. A tree counts as live while its os.py exists.
+#      /usr/lib/perl5/5.X/ gets the same treatment, with core_perl/Config.pm as
+#      the mark of a live tree.
 #
-# A bare "=> not found" is NOT always a real break. Two false positives
-# are filtered out (otherwise -bin packages like cloudflare-warp-bin get
-# flagged forever — rebuilding a prebuilt repack can never change them):
+# A bare "not found" is NOT always a real break. Three false positives are
+# filtered out (otherwise a package like cloudflare-warp-bin or openscap-git
+# gets flagged forever, and rebuilding it never changes that):
 #   a. Privately-bundled libs. Flutter/Electron-style apps ship their own
 #      libs in a private dir and load them via an $ORIGIN RPATH on the main
 #      executable. A plugin .so inspected on its own carries no such path, so
 #      its sibling lib looks "not found". If the package itself ships a file
 #      with that soname, it resolves at runtime → not a break.
-#   b. Optional / absent-by-design deps (e.g. libjvm.so for WARP's unused
+#   b. A plugin needing what its host provides. A shared object with no
+#      interpreter of its own is loaded by something, and that something's
+#      libraries are already mapped when it arrives: a perl XS module needs
+#      libperl.so, which perl keeps in its private CORE/ directory and finds
+#      through its own RUNPATH. If a direct dependency of the package ships a
+#      file with that soname, the plugin resolves at runtime → not a break. An
+#      executable gets no such pass: nothing has mapped anything for it.
+#   c. Optional / absent-by-design deps (e.g. libjvm.so for WARP's unused
 #      Dart-JNI plugin). Listed in $ignore_sonames below.
 #
+# Whatever survives that is a real break, but "rebuild it" is only sometimes the
+# answer, so a package is not told to rebuild until the AUR has been asked:
+#   rebuild    in the AUR, built from source: a rebuild can fix it.
+#   prebuilt   a -bin package: a rebuild repackages the same binary, so what it
+#              needs is a new upstream release or the library it wants.
+#   no source  in no repo and not in the AUR: dropped from a repo, deleted from
+#              the AUR, or built by hand. There is nothing for yay to rebuild.
+# A break you have decided to live with goes in the ignore file (see below): it
+# is then counted in one line instead of reported, and no longer fails the run.
+#
 # Usage:
-#   aur-rebuild-check                   # scan + report (exit 1 if any need rebuild)
-#   aur-rebuild-check --fix             # offer `yay -S --rebuild` for the set — after
-#                                       # aur-pin-check has passed every package in it
+#   aur-rebuild-check                   # scan + report. On a terminal, asks whether to
+#                                       # rebuild what a rebuild can fix, right there —
+#                                       # each package past aur-pin-check first
+#   aur-rebuild-check --fix             # the same offer, wherever it is run from
 #   aur-rebuild-check --fix --noconfirm # no prompt; --noconfirm is forwarded to yay
-#   aur-rebuild-check --quiet           # no output if nothing to do (for cron)
+#   aur-rebuild-check --no-prompt       # report only, and never ask
+#   aur-rebuild-check --quiet           # no output if nothing to do, and no prompt (cron)
+#
+# Files:
+#   ~/.config/aur-rebuild-check/ignore  package names, one per line, # comments
 #
 # Env:
 #   AUR_REBUILD_IGNORE_SONAMES   space-separated extra sonames to ignore
+#   AUR_REBUILD_REPORT           a file to append "<pkg> — <reason>" lines to
 #
-# Exit: 0 if clean, 1 if rebuilds needed (or --fix was refused by the gate),
+# Exit: 0 if clean, 1 if anything is broken (or --fix was refused by the gate),
 #       2 on error.
 
 set -uo pipefail
 
+# With COLUMNS exported, pacman wraps -Qi fields even into a pipe, and a
+# dependency on a continuation line would simply not be seen.
+unset COLUMNS
+
+AUR_RPC_URL="${AUR_RPC_URL:-https://aur.archlinux.org/rpc/v5/info?arg%%5B%%5D=%s}"
+IGNORE_FILE="${XDG_CONFIG_HOME:-$HOME/.config}/aur-rebuild-check/ignore"
+
 mode=scan
 quiet=0
 assume_yes=0
+no_prompt=0
 for arg in "$@"; do
     case "$arg" in
         --fix)       mode=fix ;;
         --quiet)     quiet=1 ;;
         --noconfirm) assume_yes=1 ;;
+        --no-prompt) no_prompt=1 ;;
         -h|--help)   sed -n '2,/^$/p' "$0" | sed 's/^# \?//'; exit 0 ;;
         *) echo "[aur-rebuild] unknown option: $arg (try --help)" >&2; exit 2 ;;
     esac
@@ -73,6 +107,14 @@ msg() { (( quiet )) && return 0; printf '[aur-rebuild] %s\n' "$*" >&2; }
 
 command -v readelf >/dev/null 2>&1 || { echo "readelf missing (install binutils)" >&2; exit 2; }
 command -v pacman >/dev/null 2>&1 || { echo "pacman missing" >&2; exit 2; }
+
+# A scan is only as good as these two, and silence from either reads as "clean":
+# a readelf broken by a half-finished upgrade finds nothing wrong anywhere, and a
+# pacman that cannot read its database lists no packages to look at.
+LC_ALL=C readelf -h -- "$BASH" 2>/dev/null | grep -q 'Class:' \
+    || { echo "[aur-rebuild] readelf is not working — nothing was checked" >&2; exit 2; }
+pacman -Q >/dev/null 2>&1 \
+    || { echo "[aur-rebuild] pacman cannot read its database — nothing was checked" >&2; exit 2; }
 
 # Sonames that are optional / absent-by-design and never a real break.
 # libjvm.so: cloudflare-warp-bin's libdartjni.so references it, but the
@@ -105,21 +147,26 @@ is_elf() {
 #   elf_needed  the DT_NEEDED sonames
 #   elf_search  DT_RUNPATH, or DT_RPATH when there is no RUNPATH (the loader
 #               ignores RPATH once a RUNPATH exists)
+#   elf_exe     1 when it names a program interpreter: it runs by itself, where
+#               an object without one is loaded by something else
 # The strings come out of a file nobody vouches for. They are only ever
-# compared, tested with -e, and printed with control characters removed.
-elf_key=""; elf_needed=(); elf_search=""
+# compared, tested with -e, and printed with control characters removed; never
+# evaluated, which is why the memo below is read with == and not with (( )).
+elf_key=""; elf_needed=(); elf_search=""; elf_exe=0
 elf_read() {
     local line class="" machine="" rpath="" runpath="" v
-    elf_key=""; elf_needed=(); elf_search=""
+    elf_key=""; elf_needed=(); elf_search=""; elf_exe=0
     while IFS= read -r line; do
+        [[ "$line" != 'readelf: Error:'* ]] || return 1
         case "$line" in
             *'(NEEDED)'*'['*']'*)  v=${line#*\[}; elf_needed+=("${v%\]*}") ;;
             *'(RUNPATH)'*'['*']'*) v=${line#*\[}; runpath=${v%\]*} ;;
             *'(RPATH)'*'['*']'*)   v=${line#*\[}; rpath=${v%\]*} ;;
+            *'[Requesting program interpreter:'*) elf_exe=1 ;;
             '  Class:'*)   [[ -z "$class" ]]   && { class=${line#*:};   class=${class//[[:space:]]/}; } ;;
             '  Machine:'*) [[ -z "$machine" ]] && { machine=${line#*:}; machine=${machine#"${machine%%[![:space:]]*}"}; } ;;
         esac
-    done < <(LC_ALL=C readelf -hdW -- "$1" 2>/dev/null)
+    done < <(LC_ALL=C readelf -hldW -- "$1" 2>&1)
     [[ -n "$class" && -n "$machine" ]] || return 1
     elf_key="$class|$machine"
     elf_search=${runpath:-$rpath}
@@ -177,7 +224,7 @@ sys_resolves() {
         fi
         sys_memo[$key|$soname]=$hit
     fi
-    (( sys_memo[$key|$soname] ))
+    [[ "${sys_memo[$key|$soname]}" == 1 ]]
 }
 
 # Can anything on this machine load an object of this class and machine at
@@ -191,10 +238,11 @@ loadable() { sys_resolves "$1" libc.so.6; }
 # nowhere. Called directly, never through $(...) or a pipe: the memo tables
 # above live in this shell, and a subshell would rebuild them for every file.
 elf_missing=()
+elf_bad=0
 unresolved_needed() {
     local f=$1 origin=${1%/*} soname d dirs found
-    elf_missing=()
-    elf_read "$f" || return 0
+    elf_missing=(); elf_bad=0
+    elf_read "$f" || { elf_bad=1; return 0; }
     (( ${#elf_needed[@]} )) || return 0
     loadable "$elf_key" || return 0
     for soname in "${elf_needed[@]}"; do
@@ -209,9 +257,11 @@ unresolved_needed() {
             IFS=: read -r -a dirs <<<"$elf_search"
             for d in "${dirs[@]}"; do
                 [[ -n "$d" ]] || continue
-                d=${d//'${ORIGIN}'/$origin};  d=${d//'$ORIGIN'/$origin}
-                d=${d//'${LIB}'/lib};         d=${d//'$LIB'/lib}
-                d=${d//'${PLATFORM}'/$HOSTTYPE}; d=${d//'$PLATFORM'/$HOSTTYPE}
+                # The replacement is quoted: unquoted, bash >= 5.2 reads an `&` in
+                # the directory's name as "the matched text".
+                d=${d//'${ORIGIN}'/"$origin"};  d=${d//'$ORIGIN'/"$origin"}
+                d=${d//'${LIB}'/lib};           d=${d//'$LIB'/lib}
+                d=${d//'${PLATFORM}'/"$HOSTTYPE"}; d=${d//'$PLATFORM'/"$HOSTTYPE"}
                 [[ -e "$d/$soname" ]] || continue
                 key_of "$d/$soname"; [[ "$REPLY" == "$elf_key" ]] && { found=1; break; }
             done
@@ -220,12 +270,67 @@ unresolved_needed() {
     done
 }
 
-# The directory the installed python owns — "python3.13" for python 3.13.x.
-# Empty when python is not installed, which switches check 2 off.
+# Does a direct dependency of package $1 ship a library named $2 of kind $3?
+# Asked only about a soname nothing else could resolve, so the file lists of a
+# dozen packages are read rarely, and once per soname. A dependency named by a
+# provide rather than a package has no file list of its own and is passed over:
+# the worst that does is leave a false alarm standing.
+declare -A dep_memo=()
+dep_ships() {
+    local pkg=$1 soname=$2 key=$3 d f hit=0 deps
+    if [[ -z "${dep_memo[$pkg|$soname|$key]+x}" ]]; then
+        deps=$(LC_ALL=C pacman -Qi -- "$pkg" 2>/dev/null \
+               | awk '/^Depends On/ && !seen { sub(/^[^:]*:[[:space:]]*/, ""); print; seen = 1 }')
+        for d in $deps; do
+            d=${d%%[<>=]*}
+            while IFS= read -r f; do
+                [[ "${f##*/}" == "$soname" && -f "$f" ]] || continue
+                key_of "$f"; [[ "$REPLY" == "$key" ]] && { hit=1; break 2; }
+            done < <(pacman -Qlq -- "$d" 2>/dev/null)
+        done
+        dep_memo[$pkg|$soname|$key]=$hit
+    fi
+    [[ "${dep_memo[$pkg|$soname|$key]}" == 1 ]]
+}
+
+# Does the package itself ship a real library of this name and this kind? A
+# dangling symlink, or a libfoo.so.1 that is a text file under /usr/share/doc,
+# is not one, and must not excuse a binary that cannot start. Fills nothing:
+# pkg_basenames is the scan loop's.
+ships_own() { # ships_own <soname> <key>
+    local f
+    while IFS= read -r f; do
+        [[ -n "$f" && -e "$f" ]] || continue
+        is_elf "$f" || continue
+        key_of "$f"; [[ "$REPLY" == "$2" ]] && return 0
+    done <<<"${pkg_basenames[$1]:-}"
+    return 1
+}
+
+# What pacman -Qlq prefixes its paths with: nothing on a real system. Anchors the
+# interpreter trees below, so /opt/app/usr/lib/python3.9/ is the app's business.
+root=$(pacman-conf RootDir 2>/dev/null); root=${root%/}
+
+# The trees the installed interpreters own — "python3.13" for python 3.13.x,
+# "5.42" for perl 5.42.x. Empty when one is not installed, which switches its
+# half of check 2 off.
 py_cur=""
 if v=$(pacman -Q python 2>/dev/null | awk '{print $2}') && [[ -n "$v" ]]; then
     IFS=. read -r maj min _ <<<"${v#*:}"
     [[ -n "$maj" && -n "$min" ]] && py_cur="python$maj.$min"
+fi
+perl_cur=""
+if v=$(pacman -Q perl 2>/dev/null | awk '{print $2}') && [[ -n "$v" ]]; then
+    IFS=. read -r maj min _ <<<"${v#*:}"
+    [[ -n "$maj" && -n "$min" ]] && perl_cur="$maj.$min"
+fi
+
+# Packages whose breakage has been looked at and accepted.
+declare -A ignored_pkg=()
+if [[ -r "$IGNORE_FILE" ]]; then
+    while read -r p _; do
+        [[ -n "$p" && "$p" != \#* ]] && ignored_pkg[$p]=1
+    done < "$IGNORE_FILE"
 fi
 
 aur_pkgs=()
@@ -238,8 +343,13 @@ fi
 
 msg "scanning ${#aur_pkgs[@]} AUR package(s) for broken .so links and stale interpreter dirs..."
 
+# A string out of an ELF, made safe to print: printable ASCII and nothing else,
+# whatever the locale thinks a control character is.
+printable() { printf '%s' "$1" | LC_ALL=C tr -c '[:print:]' '?'; }
+
 need_rebuild=()
 reasons=()
+unchecked=()
 for pkg in "${aur_pkgs[@]}"; do
     # Files this package ships, by basename — so we can tell whether a
     # "not found" soname is actually a lib the package bundles itself
@@ -247,33 +357,43 @@ for pkg in "${aur_pkgs[@]}"; do
     # the plugin's own dynamic section does not carry).
     pkg_files=$(pacman -Qlq "$pkg" 2>/dev/null)
     unset pkg_basenames; declare -A pkg_basenames
-    while read -r pf; do base="${pf##*/}"; [[ -n "$base" ]] && pkg_basenames["$base"]=1; done <<<"$pkg_files"
+    while read -r pf; do base="${pf##*/}"; [[ -n "$base" ]] && pkg_basenames["$base"]+="$pf"$'\n'; done <<<"$pkg_files"
 
     reason=""
     while IFS= read -r f; do
         [[ -n "$f" ]] || continue
         # Check 2: a file under another interpreter's tree. Path-based, nothing
-        # is opened. pacman -Qlq may print RootDir-prefixed paths, so the match
-        # is not anchored on the left.
-        if [[ -n "$py_cur" && "$f" =~ /usr/lib/(python3\.[0-9]+)/ \
+        # is opened.
+        if [[ -n "$py_cur" && "$f" =~ ^"$root"/usr/lib/(python3\.[0-9]+)/ \
               && "${BASH_REMATCH[1]}" != "$py_cur" ]]; then
             pydir=${BASH_REMATCH[1]}
-            # Same prefix as $f, so a RootDir-prefixed listing still finds it.
-            if [[ ! -e "${f%%/usr/lib/python3.*}/usr/lib/$pydir/os.py" ]]; then
+            if [[ ! -e "$root/usr/lib/$pydir/os.py" ]]; then
                 reason="files under /usr/lib/$pydir/ — the installed interpreter is $py_cur"
+                break
+            fi
+        fi
+        if [[ -n "$perl_cur" && "$f" =~ ^"$root"/usr/lib/perl5/([0-9]+\.[0-9]+)/ \
+              && "${BASH_REMATCH[1]}" != "$perl_cur" ]]; then
+            pltree=${BASH_REMATCH[1]}
+            if [[ ! -e "$root/usr/lib/perl5/$pltree/core_perl/Config.pm" ]]; then
+                reason="files under /usr/lib/perl5/$pltree/ — the installed perl is $perl_cur"
                 break
             fi
         fi
         # Check 1: an ELF whose DT_NEEDED does not resolve. Regular files only:
         # a symlink's target is scanned under its own name if this package owns
         # it, and is another package's problem if it does not.
-        [[ -f "$f" && ! -L "$f" && -s "$f" && -r "$f" ]] || continue
+        [[ -f "$f" && ! -L "$f" && -s "$f" ]] || continue
+        # Never a silent pass: a file that could not be looked at is counted.
+        [[ -r "$f" ]] || { unchecked+=("$f"); continue; }
         is_elf "$f" || continue
         unresolved_needed "$f"
+        (( ! elf_bad )) || unchecked+=("$f")
         for soname in "${elf_missing[@]}"; do
-            [[ -n "${pkg_basenames[$soname]:-}" ]] && continue  # bundled → $ORIGIN-resolved
+            ships_own "$soname" "$elf_key" && continue          # bundled → $ORIGIN-resolved
             is_ignored_soname "$soname" && continue              # optional/absent-by-design
-            reason="${soname//[[:cntrl:]]/?} not found (needed by ${f//[[:cntrl:]]/?})"
+            (( elf_exe )) || ! dep_ships "$pkg" "$soname" "$elf_key" || continue  # its host has it
+            reason="$(printable "$soname") not found (needed by $(printable "$f"))"
             break
         done
         [[ -n "$reason" ]] && break
@@ -285,41 +405,152 @@ for pkg in "${aur_pkgs[@]}"; do
     fi
 done
 
-if (( ${#need_rebuild[@]} == 0 )); then
+# Accepted breakage is counted, not reported: out of the way, but not out of
+# sight. A package you stopped hearing about should not be one you forgot.
+kept=(); kept_why=(); accepted=()
+for i in "${!need_rebuild[@]}"; do
+    if [[ -n "${ignored_pkg[${need_rebuild[$i]}]:-}" ]]; then
+        accepted+=("${need_rebuild[$i]}")
+    else
+        kept+=("${need_rebuild[$i]}"); kept_why+=("${reasons[$i]}")
+    fi
+done
+(( ${#accepted[@]} == 0 )) || msg "${#accepted[@]} broken package(s) accepted in $IGNORE_FILE: ${accepted[*]}"
+(( ${#unchecked[@]} == 0 )) \
+    || msg "${#unchecked[@]} file(s) could not be inspected (not readable by you, or not valid ELF): $(printable "${unchecked[0]}")"
+
+if [[ -n "${AUR_REBUILD_REPORT:-}" ]]; then
+    for i in "${!kept[@]}"; do
+        printf '%s — %s\n' "${kept[$i]}" "${kept_why[$i]}"
+    done >> "$AUR_REBUILD_REPORT"
+fi
+
+if (( ${#kept[@]} == 0 )); then
     msg "all AUR packages have satisfied library links ✓"
     exit 0
 fi
 
-# Always print results, even in quiet mode — silence was only for the header.
-printf '[aur-rebuild] %d AUR package(s) need rebuild:\n' "${#need_rebuild[@]}" >&2
-for i in "${!need_rebuild[@]}"; do
-    printf '  %s — %s\n' "${need_rebuild[$i]}" "${reasons[$i]}" >&2
-done
-echo >&2
-printf '[aur-rebuild] fix: yay -S --rebuild %s\n' "${need_rebuild[*]}" >&2
+# Percent-encode a name for the RPC URL; the same function as aur-pin-check's.
+urlenc() {
+    local s="$1" out="" c i
+    for (( i = 0; i < ${#s}; i++ )); do
+        c=${s:i:1}
+        case "$c" in
+            [A-Za-z0-9._~-]) out+="$c" ;;
+            *) printf -v c '%%%02X' "'$c"; out+="$c" ;;
+        esac
+    done
+    printf '%s' "$out"
+}
 
-if [[ "$mode" == fix ]]; then
+# Is this name in the AUR index? 0 yes, 1 no, 2 could not tell. Only ever asked
+# about something flagged, so a clean scan touches no network.
+in_aur() {
+    local rpc body
+    printf -v rpc "$AUR_RPC_URL" "$(urlenc "$1")"
+    body=$(curl -fsSL --max-time 10 "$rpc" 2>/dev/null) || return 2
+    # An RPC error reply carries resultcount:0 as well, and a rate limit is not
+    # a deleted package.
+    case "$body" in
+        *'"type":"error"'*)  return 2 ;;
+        *'"resultcount":0'*) return 1 ;;
+        *'"resultcount":'*)  return 0 ;;
+        *)                   return 2 ;;
+    esac
+}
+
+can_rebuild=(); rebuild_why=()
+prebuilt=();    prebuilt_why=()
+no_source=();   no_source_why=()
+unasked=0
+for i in "${!kept[@]}"; do
+    pkg=${kept[$i]}
+    in_aur "$pkg"; where=$?
+    if (( where == 1 )); then
+        no_source+=("$pkg"); no_source_why+=("${kept_why[$i]}")
+    elif [[ "$pkg" == *-bin ]]; then
+        prebuilt+=("$pkg"); prebuilt_why+=("${kept_why[$i]}")
+    else
+        (( where == 2 )) && unasked=1
+        can_rebuild+=("$pkg"); rebuild_why+=("${kept_why[$i]}")
+    fi
+done
+
+# Rebuild right here, or be told how? The answer is asked for wherever a person
+# can give one: --quiet is cron, and --no-prompt is a caller that decided.
+can_ask=0
+if (( ! quiet && ! no_prompt )) && { : </dev/tty; } 2>/dev/null; then
+    can_ask=1
+fi
+
+# Always print results, even in quiet mode — silence was only for the header.
+if (( ${#can_rebuild[@]} > 0 )); then
+    printf '[aur-rebuild] %d AUR package(s) need rebuild:\n' "${#can_rebuild[@]}" >&2
+    for i in "${!can_rebuild[@]}"; do
+        printf '  %s — %s\n' "${can_rebuild[$i]}" "${rebuild_why[$i]}" >&2
+    done
+    (( unasked )) && echo "[aur-rebuild] (could not reach the AUR to confirm these are still there)" >&2
+    if [[ "$mode" != fix ]] && (( ! can_ask )); then
+        printf '[aur-rebuild] fix: aur-rebuild-check --fix   (pin-checks, then yay -S --rebuild %s)\n' "${can_rebuild[*]}" >&2
+    fi
+fi
+if (( ${#prebuilt[@]} > 0 )); then
+    printf '[aur-rebuild] %d prebuilt package(s) are broken, and a rebuild would repackage the same binary:\n' "${#prebuilt[@]}" >&2
+    for i in "${!prebuilt[@]}"; do
+        printf '  %s — %s\n' "${prebuilt[$i]}" "${prebuilt_why[$i]}" >&2
+    done
+    echo "[aur-rebuild] fix: wait for a new release of it, or install what provides the missing library." >&2
+fi
+if (( ${#no_source[@]} > 0 )); then
+    printf '[aur-rebuild] %d package(s) are broken and have no source — in no repo and not in the AUR:\n' "${#no_source[@]}" >&2
+    for i in "${!no_source[@]}"; do
+        pkg=${no_source[$i]}
+        needs=$(LC_ALL=C pacman -Qi -- "$pkg" 2>/dev/null \
+                | awk '/^Required By/ && !seen { sub(/^[^:]*:[[:space:]]*/, ""); print; seen = 1 }')
+        printf '  %s — %s\n' "$pkg" "${no_source_why[$i]}" >&2
+        if [[ -z "$needs" || "$needs" == None ]]; then
+            printf '    nothing requires it. Remove it: sudo pacman -Rns %s\n' "$pkg" >&2
+        else
+            printf '    required by: %s\n' "$needs" >&2
+        fi
+    done
+    echo "[aur-rebuild] if you built one yourself, rebuild it from your own PKGBUILD. yay cannot." >&2
+fi
+if (( ${#prebuilt[@]} + ${#no_source[@]} > 0 )); then
+    echo "[aur-rebuild] keeping one as it is? Add its name to $IGNORE_FILE to stop being told." >&2
+fi
+
+if [[ "$mode" == fix ]] || (( can_ask && ${#can_rebuild[@]} > 0 )); then
+    if (( ${#can_rebuild[@]} == 0 )); then
+        echo "[aur-rebuild] --fix: nothing here is something a rebuild can fix." >&2
+        exit 1
+    fi
     # A rebuild is an install, and goes through the same gate as aurinstall.
     # Rebuilding a package whose PKGBUILD has since grown an unpinned VCS
     # source would be exactly the hole the gate exists to close, reached
-    # through a side door labelled "maintenance".
+    # through a side door labelled "maintenance". Each package is judged by
+    # itself: one refusal must not leave the rest of the set broken.
     if ! command -v aur-pin-check >/dev/null 2>&1; then
         echo "[aur-rebuild] --fix needs aur-pin-check on PATH; refusing to rebuild ungated" >&2
         exit 2
     fi
-    if ! aur-pin-check --deps "${need_rebuild[@]}"; then
+    passed=(); refused=()
+    for pkg in "${can_rebuild[@]}"; do
+        if aur-pin-check --deps "$pkg"; then passed+=("$pkg"); else refused+=("$pkg"); fi
+    done
+    if (( ${#refused[@]} > 0 )); then
         echo "" >&2
-        echo "[aur-rebuild] refusing to rebuild: the pin-check rejected one or more of these." >&2
-        echo "[aur-rebuild] override, once you have vetted the PKGBUILD: yay -S --rebuild ${need_rebuild[*]}" >&2
-        exit 1
+        echo "[aur-rebuild] refusing to rebuild: the pin-check rejected ${refused[*]}." >&2
+        echo "[aur-rebuild] override, once you have vetted the PKGBUILD: yay -S --rebuild ${refused[*]}" >&2
     fi
+    (( ${#passed[@]} > 0 )) || exit 1
     go=0
     if (( assume_yes )); then
         go=1
     elif { : </dev/tty; } 2>/dev/null; then
         # The prompt reads the terminal directly: this runs at the tail of
         # `safeup`, whose stdin may be a pipe when chained from an alias.
-        read -r -p "[aur-rebuild] rebuild now with yay? [y/N] " yn </dev/tty || yn=n
+        read -r -p "[aur-rebuild] rebuild ${passed[*]} now with yay? [y/N] " yn </dev/tty || yn=n
         [[ "$yn" == [yY]* ]] && go=1
     else
         msg "no terminal — not rebuilding (pass --noconfirm to rebuild unattended)"
@@ -327,8 +558,9 @@ if [[ "$mode" == fix ]]; then
     if (( go )); then
         yay_args=(-S --rebuild)
         (( assume_yes )) && yay_args+=(--noconfirm)
-        yay "${yay_args[@]}" "${need_rebuild[@]}"
-        exit $?
+        yay "${yay_args[@]}" "${passed[@]}"; rc=$?
+        (( ${#refused[@]} == 0 )) || rc=1
+        exit "$rc"
     fi
 fi
 

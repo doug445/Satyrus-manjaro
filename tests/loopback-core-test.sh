@@ -51,7 +51,7 @@
 #   3.  the hold is recorded in the log, so it can be chased later
 #   4.  the same package is NOT held once the dep becomes satisfiable — the
 #       guard is not a blanket refusal to upgrade foreign packages
-#   5.  a package with no version constraint at all is never held
+#   5.  a satisfied dependency is no reason to hold, version or no version
 #   6.  "installing X breaks dependency ... required by Y", with Y an AUR
 #       package, is recovered from WITHOUT holding X: the repo upgrade lands in
 #       full (--assume-installed stands in for Y's stale dependency), and Y is
@@ -124,6 +124,62 @@
 #       that library is gone
 #   35. a same-named library of the wrong machine does not satisfy a DT_NEEDED,
 #       and an object this machine cannot load at all is foreign, not stale
+#   36. a broken package in no repo and not in the AUR is not told to rebuild:
+#       no yay command, the removal it can actually do, and --fix leaves it alone
+#   37. a broken -bin package is not told to rebuild either: that repackages
+#       the same binary
+#   38. a package in the ignore file is counted, not reported, and the scan
+#       exits clean
+#   39. a plugin needing what its host's package ships privately (a perl XS
+#       module and libperl.so) is not flagged; an executable with the same
+#       need is, because nothing has mapped anything for it
+#   40. a package stranded in a previous perl's tree is flagged, and a tree whose
+#       perl is still installed is not
+#   41. --fix judges each package by itself: one the pin check refuses does not
+#       stop the rest being rebuilt, and the exit status still says so
+#   42. a hostile DT_NEEDED string is data: the scan reports it without running
+#       it, and with its control characters removed
+#   43. two AUR packages needing the same stale dependency are BOTH named for a
+#       rebuild, on the terminal and in the log
+#   44. a foreign package needing something no repo has, versioned or not, is
+#       held; one missing dependency used to stop the whole upgrade
+#   45. a dependency on a wrapped line is still read: with COLUMNS exported,
+#       pacman wraps -Si and -Qi fields even into a pipe
+#   46. pacman runs in the C locale, because safeup reads its messages to
+#       recover from them
+#   47. remove-versioned-kernel reads a wrapped Depends On as well
+#   48. a stand-in for an AUR package is not used when pacman also cannot satisfy
+#       a repository package: it would answer for that one too, silently
+#   49. what only the whole transaction shows is held as well: a satisfier in
+#       IgnorePkg, a `libfoo<2` the same upgrade breaks, a new dependency with a
+#       constraint of its own, a foreign package that replaces one
+#       (and a replacement with nothing else pending reaches that dry run too);
+#       an installed foreign package a Manjaro upgrade breaks stops the run,
+#       with nothing changed and the right reason given
+#   50. sync databases that cannot be read are an error, not "nothing pending"
+#   51. the master prompt: Enter proceeds; end of file and anything unrecognised
+#       do not
+#   52. a run the user declined logged no hold; a log that cannot be written says so
+#   53. pacman exiting 0 with the upgrade unfinished is not a clean upgrade, and
+#       --aur builds nothing on top of it
+#   54. what the rebuild scan finds reaches the log; a missing scan says so
+#   55. --aur: aurupdate after a clean upgrade, the broken package to aurinstall,
+#       and neither after a failed upgrade
+#   56. recovery path 1: a conflict --noconfirm refused is retried with a prompt
+#   57. a ranged dependency gets a stand-in too
+#   58. the rebuild scan asks yes or no on a terminal, and only rebuilds on yes;
+#       --no-prompt and no terminal print the command instead
+#   59. so does safeup, for what the upgrade itself broke
+#   60. a broken readelf is an error, not "all clean"; a file that cannot be
+#       parsed is counted, not passed
+#   61. a text file named like the soname does not excuse a binary
+#   62. RPATH, ${ORIGIN} and an `&` in a directory name resolve as the loader
+#       resolves them; python3.X under /opt is the application's own
+#   63. remove-versioned-kernel refuses the running series after an in-place
+#       upgrade; takes a backup of what it rewrites and none of what it does not;
+#       says when it could not check for a UKI
+#   64. no package's file is loaded or run by the scan: a constructor would
+#       leave a mark, and the dynamic loader's own debug log would name it
 #
 # Run as root:  sudo bash tests/loopback-core-test.sh
 # Requires: pacman, repo-add, bsdtar (libarchive), losetup, mkfs.ext4, cc,
@@ -221,6 +277,8 @@ exec /usr/bin/pacman --config "$CONF" "\$@"
 SHIMEOF
     printf '#!/bin/bash\nexec /usr/bin/pacman-conf --config "%s" "$@"\n' "$CONF" > "$SHIM/pacman-conf"
     printf '#!/bin/bash\nexec "$@"\n' > "$SHIM/sudo"
+    # Which kernel "is running" must not depend on the machine under the test.
+    printf '#!/bin/bash\n[ "${1:-}" = -r ] && { echo "${FAKE_UNAME_R:-5.4.250-1-TESTING}"; exit 0; }\nexec /usr/bin/uname "$@"\n' > "$SHIM/uname"
     # yay stub: records its argv so the --fix path can prove what reached it.
     printf '#!/bin/bash\nprintf "%%s\\n" "$*" >> "%s"\nexit 0\n' "$ENV_DIR/yay.log" > "$SHIM/yay"
     chmod +x "$SHIM"/*
@@ -229,6 +287,10 @@ SHIMEOF
     export PATH="$SHIM:$BIN:$BASE_PATH"
     export SAFEUP_PACMAN_CONF="$CONF"
     export SAFEUP_LOG="$ENV_DIR/safeup.log"
+    # What aur-rebuild-check asks about a package it flags: never the real AUR.
+    # A name with no file here is a name the index could not be asked about.
+    export AUR_RPC_URL="file://$ENV_DIR/%s.json"
+    export XDG_CONFIG_HOME="$ENV_DIR/config"
     : > "$SAFEUP_LOG"
 }
 
@@ -248,6 +310,7 @@ mkpkg() {
         echo "builddate = 1700000000"; echo "packager = safeup-test"
         echo "size = 0"; echo "arch = $ARCH"
         for dep; do echo "depend = $dep"; done
+        [ -z "${MKPKG_EXTRA:-}" ] || echo "$MKPKG_EXTRA"
     } > "$d/.PKGINFO"
     if [ -n "$files" ]; then
         local IFS=,
@@ -260,6 +323,11 @@ mkpkg() {
     ( cd "$d" && bsdtar -czf "$ENV_DIR/build/$name-$ver-$ARCH.pkg.tar.gz" -- .PKGINFO * ) \
         || echo "mkpkg: bsdtar failed for $name-$ver" >&2
     echo "$ENV_DIR/build/$name-$ver-$ARCH.pkg.tar.gz"
+}
+
+# What the AUR index answers for a name: aur_index <pkg> <resultcount>
+aur_index() {
+    printf '{"resultcount":%s,"results":[{"Name":"%s","PackageBase":"%s"}]}' "$2" "$1" "$1" > "$ENV_DIR/$1.json"
 }
 
 publish() { # publish <repo-dir> <db-name> <pkgfile>...
@@ -343,7 +411,7 @@ grep -q 'no ABI conflicts' <<<"$out" \
 
 # =============================================================================
 echo ""
-echo "== 5. an unversioned dependency is never a reason to hold =="
+echo "== 5. a satisfied unversioned dependency is no reason to hold =="
 # =============================================================================
 mkenv unversioned blackarch
 publish "$REPO_M" extra "$(mkpkg libbar 1.0-1)"
@@ -376,7 +444,7 @@ pacman -U --noconfirm "$APPX1" "$CONS1" "$OTHER1" >/dev/null 2>&1
 publish "$REPO_M" extra "$(mkpkg appx 2.0-1)" "$(mkpkg other 2.0-1)"
 
 out=$(safeup --noconfirm </dev/null 2>&1); rc=$?
-if grep -q "consumer (AUR) needs 'appx=1.0'" <<<"$out" && grep -q 'rebuild: aurinstall consumer' <<<"$out"; then
+if grep -q "consumer (AUR) needs 'appx=1.0'" <<<"$out" && grep -q 'rebuild later with: aurinstall consumer' <<<"$out"; then
     pass "the broken AUR package was identified from pacman's own message and named for rebuild"
 else
     fail "AUR break not reported: $(grep -i 'break\|error\|needs' <<<"$out" | head -3)"
@@ -410,6 +478,59 @@ if [ "$rc" != "0" ] && grep -q 'mirror is mid-sync' <<<"$out" \
     pass "a break between two repo packages stops the run, changing nothing"
 else
     fail "mid-sync repos were not refused (rc=$rc, appy=$(installed_ver appy)): $(tail -5 <<<"$out")"
+fi
+
+# 43. pacman reports one line per dependent. The stand-in is the same for both,
+# and the second dependent must not vanish with the duplicate.
+mkenv abibreak2
+APPZ1=$(mkpkg appz 1.0-1)
+pacman -U --noconfirm "$APPZ1" "$(mkpkg consa 1.0-1 "appz=1.0")" "$(mkpkg consb 1.0-1 "appz=1.0")" >/dev/null 2>&1
+publish "$REPO_M" extra "$(mkpkg appz 2.0-1)"
+out=$(safeup --noconfirm </dev/null 2>&1); rc=$?
+if [ "$rc" = "0" ] && grep -q 'rebuild later with: aurinstall consa consb' <<<"$out" \
+   && grep -q 'consa' "$SAFEUP_LOG" && grep -q 'consb' "$SAFEUP_LOG"; then
+    pass "two AUR packages on one stale dependency are both named, and both logged"
+else
+    fail "a needed rebuild went unreported (rc=$rc): $(grep -E 'rebuild|needs' <<<"$out" | head -4 | tr '\n' ' ') / log: $(tr '\n' ' ' < "$SAFEUP_LOG")"
+fi
+
+# 44. Not every unsatisfiable dependency has a version in it.
+mkenv unversioned2 blackarch
+pacman -U --noconfirm "$(mkpkg lonely 1.0-1)" "$(mkpkg bystander 1.0-1)" >/dev/null 2>&1
+publish "$REPO_F" blackarch "$(mkpkg lonely 2.0-1 "not-in-any-repo")"
+publish "$REPO_M" extra "$(mkpkg bystander 2.0-1)"
+out=$(safeup --noconfirm </dev/null 2>&1); rc=$?
+if [ "$rc" = "0" ] && grep -q 'hold lonely' <<<"$out" \
+   && [ "$(installed_ver lonely)" = "1.0-1" ] && [ "$(installed_ver bystander)" = "2.0-1" ]; then
+    pass "a foreign package with an unversioned, unsatisfiable dependency is held; the rest upgrades"
+else
+    fail "one unsatisfiable dependency stopped the upgrade (rc=$rc, bystander=$(installed_ver bystander)): $(tail -4 <<<"$out")"
+fi
+
+# 45. COLUMNS in the environment makes pacman wrap, pipe or no pipe.
+mkenv wrapped blackarch
+pacman -U --noconfirm "$(mkpkg wraptool 1.0-1)" >/dev/null 2>&1
+publish "$REPO_M" extra "$(mkpkg aaaa-first-dep 1.0-1)" "$(mkpkg bbbb-second-dep 1.0-1)" "$(mkpkg cccc-third-dep 1.0-1)"
+publish "$REPO_F" blackarch "$(mkpkg wraptool 2.0-1 "aaaa-first-dep" "bbbb-second-dep" "cccc-third-dep" "libnever>=9")"
+out=$(COLUMNS=40 safeup --check </dev/null 2>&1)
+if grep -q 'hold wraptool.*libnever>=9' <<<"$out"; then
+    pass "a dependency on a wrapped line of pacman -Si is still read"
+else
+    fail "COLUMNS hid a dependency from the pre-flight: $(grep -E 'hold|would hold' <<<"$out" | head -3)"
+fi
+
+# 46. safeup reads pacman's own messages, so they have to arrive in one language.
+mkenv locale
+LOC_SHIM="$SHIM/pacman"
+mv "$LOC_SHIM" "$LOC_SHIM.real"
+printf '#!/bin/bash\n[[ " $* " == *" -Syu "* ]] && echo "LC_ALL=${LC_ALL:-unset}" >> "%s"\nexec "%s" "$@"\n' \
+    "$ENV_DIR/locale.log" "$LOC_SHIM.real" > "$LOC_SHIM"
+chmod +x "$LOC_SHIM"
+LC_ALL=de_DE.UTF-8 safeup --noconfirm </dev/null >/dev/null 2>&1
+if grep -q '^LC_ALL=C$' "$ENV_DIR/locale.log" 2>/dev/null; then
+    pass "pacman -Syu runs in the C locale, whatever the user's"
+else
+    fail "pacman -Syu ran with $(cat "$ENV_DIR/locale.log" 2>/dev/null): a translated message defeats the recovery"
 fi
 
 # =============================================================================
@@ -649,8 +770,9 @@ pacman -R --noconfirm py311mod python311 python >/dev/null 2>&1
 # local file here, exactly as the fixture suite does it.
 if [ -f "$ELF/libmain.so" ] && curl -V 2>/dev/null | grep -q '\bfile\b'; then
     pacman -U --noconfirm "$ENV_DIR/build/brokenapp-1.0-1-$ARCH.pkg.tar.gz" >/dev/null 2>&1
-    export AUR_SRCINFO_URL="file://$ENV_DIR/%s.SRCINFO" AUR_RPC_URL="file://$ENV_DIR/%s.json"
+    export AUR_SRCINFO_URL="file://$ENV_DIR/%s.SRCINFO"
     export AUR_PKGBUILD_URL="file://$ENV_DIR/%s.PKGBUILD"
+    aur_index brokenapp 1
     printf 'pkgbase = brokenapp\n\tsource = git+https://example.invalid/b.git\n\npkgname = brokenapp\n' \
         > "$ENV_DIR/brokenapp.SRCINFO"
     : > "$ENV_DIR/yay.log"
@@ -660,10 +782,10 @@ if [ -f "$ELF/libmain.so" ] && curl -V 2>/dev/null | grep -q '\bfile\b'; then
     else
         fail "--fix bypassed the gate (rc=$rc, yay: $(cat "$ENV_DIR/yay.log"))"
     fi
-    printf 'pkgbase = brokenapp\n\tsource = git+https://example.invalid/b.git#commit=0123456789abcdef0123456789abcdef01234567\n\npkgname = brokenapp\n' \
+    printf 'pkgbase = brokenapp\n\tsource = git+https://example.invalid/b.git#commit=0123456789abcdef0123456789abcdef01234567\n\tsha256sums = SKIP\n\npkgname = brokenapp\n' \
         > "$ENV_DIR/brokenapp.SRCINFO"
     # The PKGBUILD the .SRCINFO describes: the pin check reads both.
-    printf 'pkgname=brokenapp\nsource=("git+https://example.invalid/b.git#commit=0123456789abcdef0123456789abcdef01234567")\n' \
+    printf 'pkgname=brokenapp\nsource=("git+https://example.invalid/b.git#commit=0123456789abcdef0123456789abcdef01234567")\nsha256sums=(SKIP)\n' \
         > "$ENV_DIR/brokenapp.PKGBUILD"
     : > "$ENV_DIR/yay.log"
     aur-rebuild-check --fix --noconfirm >/dev/null 2>&1
@@ -672,7 +794,6 @@ if [ -f "$ELF/libmain.so" ] && curl -V 2>/dev/null | grep -q '\bfile\b'; then
     else
         fail "--fix did not rebuild a clean package: $(cat "$ENV_DIR/yay.log")"
     fi
-    unset AUR_SRCINFO_URL AUR_RPC_URL AUR_PKGBUILD_URL
     pacman -R --noconfirm brokenapp >/dev/null 2>&1
 else
     skip "29: needs the broken ELF from 9-11 and a curl with file:// support"
@@ -758,6 +879,160 @@ if [ -x "$ELF/rpapp" ] && readelf -d "$ELF/rpapp" 2>/dev/null | grep -q 'RUNPATH
     pacman -R --noconfirm crosslib >/dev/null 2>&1
 else
     skip "34-35: could not build an executable with an \$ORIGIN RUNPATH here"
+fi
+
+# 36-37. "needs rebuild" is advice, and advice has to be able to work.
+if [ -f "$ELF/libmain.so" ] && curl -V 2>/dev/null | grep -q '\bfile\b'; then
+    pacman -U --noconfirm "$(mkpkg gonepkg 1.0-1 --files "$ELF/libmain.so")" >/dev/null 2>&1
+    aur_index gonepkg 0
+    : > "$ENV_DIR/yay.log"
+    out=$(aur-rebuild-check 2>&1); rc=$?
+    if [ "$rc" = "1" ] && grep -q 'gonepkg.*libdep.so not found' <<<"$out" \
+       && grep -q 'no source' <<<"$out" && grep -q 'pacman -Rns gonepkg' <<<"$out" \
+       && ! grep -q 'rebuild gonepkg' <<<"$out"; then
+        pass "a broken package with no source gets no rebuild command, and the removal it can do"
+    else
+        fail "no-source package misreported (rc=$rc): $out"
+    fi
+    out=$(aur-rebuild-check --fix --noconfirm 2>&1); rc=$?
+    if [ "$rc" = "1" ] && grep -q 'nothing here is something a rebuild can fix' <<<"$out" \
+       && [ ! -s "$ENV_DIR/yay.log" ]; then
+        pass "--fix leaves a package with no source alone: yay never runs"
+    else
+        fail "--fix tried a package with no source (rc=$rc, yay: $(cat "$ENV_DIR/yay.log")): $out"
+    fi
+    pacman -R --noconfirm gonepkg >/dev/null 2>&1
+
+    pacman -U --noconfirm "$(mkpkg brokenapp-bin 1.0-1 --files "$ELF/libmain.so")" >/dev/null 2>&1
+    aur_index brokenapp-bin 1
+    out=$(aur-rebuild-check 2>&1); rc=$?
+    if [ "$rc" = "1" ] && grep -q 'prebuilt' <<<"$out" && ! grep -q 'rebuild brokenapp-bin' <<<"$out"; then
+        pass "a broken -bin package is told a rebuild repackages the same binary"
+    else
+        fail "-bin package told to rebuild (rc=$rc): $out"
+    fi
+
+    # 38. accepted breakage is counted, not reported
+    mkdir -p "$XDG_CONFIG_HOME/aur-rebuild-check"
+    printf '# looked at this one\nbrokenapp-bin\n' > "$XDG_CONFIG_HOME/aur-rebuild-check/ignore"
+    out=$(aur-rebuild-check 2>&1); rc=$?
+    if [ "$rc" = "0" ] && grep -q '1 broken package(s) accepted.*brokenapp-bin' <<<"$out" \
+       && ! grep -q 'not found' <<<"$out"; then
+        pass "a package in the ignore file is counted in one line, and the scan exits clean"
+    else
+        fail "ignore file not honoured (rc=$rc): $out"
+    fi
+    rm -f "$XDG_CONFIG_HOME/aur-rebuild-check/ignore"
+    pacman -R --noconfirm brokenapp-bin >/dev/null 2>&1
+else
+    skip "36-38: needs the broken ELF from 9-11 and a curl with file:// support"
+fi
+
+# 39. A plugin's host has the library mapped. The dependency keeps libdep.so in
+# a private directory no search path names, exactly as perl keeps libperl.so in
+# CORE/, and a rebuild of the plugin would link it the same way forever.
+if [ -f "$ELF/libmain.so" ] && [ -x "$ELF/app" ]; then
+    pacman -U --noconfirm \
+        "$(mkpkg plughost 1.0-1 --at usr/lib/plughost/private --files "$ELF/libdep.so")" \
+        "$(mkpkg pluginapp 1.0-1 --at usr/lib/pluginapp --files "$ELF/libmain.so" plughost)" >/dev/null 2>&1
+    aur_index pluginapp 1
+    out=$(aur-rebuild-check 2>&1); rc=$?
+    if [ "$rc" = "0" ] && ! grep -q 'pluginapp' <<<"$out"; then
+        pass "a plugin needing what its dependency ships privately is not flagged"
+    else
+        fail "plugin host's library flagged as a break (rc=$rc): $out"
+    fi
+    pacman -U --noconfirm \
+        "$(mkpkg exeapp 1.0-1 --at opt/exeapp --files "$ELF/app" plughost)" >/dev/null 2>&1
+    aur_index exeapp 1
+    out=$(aur-rebuild-check 2>&1); rc=$?
+    if [ "$rc" = "1" ] && grep -q 'exeapp' <<<"$out"; then
+        pass "an executable with the same need IS flagged: nothing has mapped anything for it"
+    else
+        fail "an executable's real break was excused (rc=$rc): $out"
+    fi
+    pacman -R --noconfirm exeapp pluginapp plughost >/dev/null 2>&1
+else
+    skip "39: needs the ELF objects from 9-11 and 24"
+fi
+
+# 40. The perl half of check 2, built like the python half.
+pacman -U --noconfirm "$(mkpkg perl 5.42.2-1)" >/dev/null 2>&1
+echo '1;' > "$ELF/Mod.pm"; echo '1;' > "$ELF/Config.pm"
+pacman -U --noconfirm \
+    "$(mkpkg oldpm 1.0-1 --at usr/lib/perl5/5.40/vendor_perl --files "$ELF/Mod.pm")" >/dev/null 2>&1
+aur_index oldpm 1
+out=$(aur-rebuild-check 2>&1); rc=$?
+if [ "$rc" = "1" ] && grep -q 'oldpm.*perl5/5.40' <<<"$out"; then
+    pass "a package stranded in a previous perl's tree is flagged"
+else
+    fail "stale perl tree not flagged (rc=$rc): $out"
+fi
+pacman -U --noconfirm \
+    "$(mkpkg perl540 5.40.0-1 --at usr/lib/perl5/5.40/core_perl --files "$ELF/Config.pm")" >/dev/null 2>&1
+out=$(aur-rebuild-check 2>&1); rc=$?
+if [ "$rc" = "0" ]; then
+    pass "a tree whose perl is still installed is live, not stale"
+else
+    fail "live alternate perl tree flagged (rc=$rc): $out"
+fi
+pacman -R --noconfirm oldpm perl540 perl >/dev/null 2>&1
+
+# 41. One refusal must not leave the rest of the set broken.
+if [ -f "$ELF/libmain.so" ] && curl -V 2>/dev/null | grep -q '\bfile\b'; then
+    SHA=0123456789abcdef0123456789abcdef01234567
+    export AUR_SRCINFO_URL="file://$ENV_DIR/%s.SRCINFO" AUR_PKGBUILD_URL="file://$ENV_DIR/%s.PKGBUILD"
+    pacman -U --noconfirm "$(mkpkg goodfix 1.0-1 --files "$ELF/libmain.so")" >/dev/null 2>&1
+    pacman -U --noconfirm "$(mkpkg badfix 1.0-1 --at usr/lib/badfix --files "$ELF/libmain.so")" >/dev/null 2>&1
+    aur_index goodfix 1; aur_index badfix 1
+    printf 'pkgbase = goodfix\n\tsource = git+https://example.invalid/g.git#commit=%s\n\tsha256sums = SKIP\n\npkgname = goodfix\n' "$SHA" \
+        > "$ENV_DIR/goodfix.SRCINFO"
+    printf 'pkgname=goodfix\nsource=("git+https://example.invalid/g.git#commit=%s")\nsha256sums=(SKIP)\n' "$SHA" \
+        > "$ENV_DIR/goodfix.PKGBUILD"
+    printf 'pkgbase = badfix\n\tsource = git+https://example.invalid/b.git\n\tsha256sums = SKIP\n\npkgname = badfix\n' \
+        > "$ENV_DIR/badfix.SRCINFO"
+    : > "$ENV_DIR/yay.log"
+    out=$(aur-rebuild-check --fix --noconfirm 2>&1); rc=$?
+    if [ "$rc" != "0" ] && grep -q 'REJECT badfix' <<<"$out" \
+       && grep -q -- '-S --rebuild --noconfirm goodfix$' "$ENV_DIR/yay.log"; then
+        pass "--fix rebuilds what passed and refuses what did not, and the exit status says so"
+    else
+        fail "--fix mishandled a mixed set (rc=$rc, yay: $(cat "$ENV_DIR/yay.log")): $out"
+    fi
+    pacman -R --noconfirm goodfix badfix >/dev/null 2>&1
+    unset AUR_SRCINFO_URL AUR_PKGBUILD_URL
+else
+    skip "41: needs the broken ELF from 9-11 and a curl with file:// support"
+fi
+
+# 42. Everything readelf prints comes out of a file nobody vouches for. A
+# library whose SONAME is a shell payload gives a program that DT_NEEDED string.
+payload='libx$(touch${IFS}pwned)`touch${IFS}pwned`.so'
+esc=$(printf 'lib\033[31mred.so')
+if cc -shared -fPIC -Wl,-soname,"$payload" -o "$ELF/libhostile.so" "$ELF/dep.c" 2>/dev/null \
+   && cc -shared -fPIC -Wl,-soname,"$esc" -o "$ELF/libesc.so" "$ELF/dep.c" 2>/dev/null \
+   && cc -shared -fPIC -o "$ELF/hostile.so" "$ELF/main.c" "$ELF/libhostile.so" 2>/dev/null \
+   && cc -shared -fPIC -o "$ELF/escaped.so" "$ELF/main.c" "$ELF/libesc.so" 2>/dev/null; then
+    pacman -U --noconfirm "$(mkpkg hostileapp 1.0-1 --files "$ELF/hostile.so")" >/dev/null 2>&1
+    aur_index hostileapp 1
+    out=$(cd "$ENV_DIR" && aur-rebuild-check 2>&1); rc=$?
+    if [ "$rc" = "1" ] && grep -qF 'touch${IFS}pwned' <<<"$out" && [ ! -e "$ENV_DIR/pwned" ]; then
+        pass "a hostile DT_NEEDED string is reported as text and never run"
+    else
+        fail "hostile DT_NEEDED mishandled (rc=$rc, ran: $([ -e "$ENV_DIR/pwned" ] && echo yes || echo no)): $out"
+    fi
+    pacman -R --noconfirm hostileapp >/dev/null 2>&1
+    pacman -U --noconfirm "$(mkpkg escapp 1.0-1 --files "$ELF/escaped.so")" >/dev/null 2>&1
+    aur_index escapp 1
+    out=$(aur-rebuild-check 2>&1); rc=$?
+    if [ "$rc" = "1" ] && grep -q 'escapp' <<<"$out" && ! grep -q $'\033' <<<"$out"; then
+        pass "control characters in a DT_NEEDED string never reach the terminal"
+    else
+        fail "terminal escape from an ELF reached the report (rc=$rc): $(cat -v <<<"$out")"
+    fi
+    pacman -R --noconfirm escapp >/dev/null 2>&1
+else
+    skip "42: could not build a library with a hostile SONAME here"
 fi
 
 # =============================================================================
@@ -915,6 +1190,21 @@ else
     skip "28: uname -r ($RUNNING) has no <pkgver>-<pkgrel> prefix to build a fixture from"
 fi
 
+# 47. The same wrap, on the kernel side: an extramodule whose dependency on the
+# kernel sits on a continuation line has to go with it, or pacman refuses.
+mkenv kernelwrap
+export SAFEUP_UKI_DIR="$ENV_DIR/no-such-dir"
+pacman -U --noconfirm \
+    "$(mkpkg linux66 6.6.1-1)" "$(mkpkg linux612 6.12.1-1)" \
+    "$(mkpkg a-rather-long-dependency-name 1.0-1)" "$(mkpkg another-rather-long-dependency 1.0-1)" \
+    "$(mkpkg linux66-widemodule 1.0-1 a-rather-long-dependency-name another-rather-long-dependency linux66)" >/dev/null 2>&1
+out=$(COLUMNS=40 remove-versioned-kernel --noconfirm linux66 2>&1); rc=$?
+if [ "$rc" = "0" ] && grep -q 'removing:.*linux66-widemodule' <<<"$out" && [ -z "$(installed_ver linux66)" ]; then
+    pass "an extramodule's dependency on a wrapped line of pacman -Qi is still read"
+else
+    fail "COLUMNS hid an extramodule from the removal (rc=$rc): $(tail -3 <<<"$out")"
+fi
+
 # =============================================================================
 echo ""
 echo "== 19. --ignore cannot manufacture a partial upgrade =="
@@ -1056,6 +1346,430 @@ else
     else
         fail "redirected output wrong: $(head -3 <<<"$out" | cat -v | tr '\n' ' ')"
     fi
+fi
+
+# =============================================================================
+echo ""
+echo "== 48-57. the upgrade, against what a review could make it do =="
+# =============================================================================
+# 48. Without the AUR package, pacman refuses this. With it, the stand-in added
+# for aurpkg used to answer for repopkg as well: the transaction committed, and
+# pacman -Dk found the damage afterwards.
+mkenv standin
+pacman -U --noconfirm "$(mkpkg libd 1.0-1)" "$(mkpkg repopkg 1.0-1 "libd=1.0")" "$(mkpkg aurpkg 1.0-1 "libd=1.0")" >/dev/null 2>&1
+publish "$REPO_M" extra "$(mkpkg libd 2.0-1)" "$(mkpkg repopkg 2.0-1 "libd=1.0")"
+out=$(safeup --noconfirm </dev/null 2>&1); rc=$?
+if [ "$rc" != "0" ] && [ "$(installed_ver libd)" = "1.0-1" ] && grep -q 'no stand-in is safe' <<<"$out" \
+   && pacman -Dk >/dev/null 2>&1; then
+    pass "no stand-in when a repository package is unsatisfiable too: nothing changed, and it says why"
+else
+    fail "a stand-in hid a repository inconsistency (rc=$rc, libd=$(installed_ver libd)): $(tail -4 <<<"$out")"
+fi
+
+# 49. What only the resolver sees.
+held_ok() { # held_ok <pkg> <description>: held, and the run went through
+    if [ "$rc" = "0" ] && grep -q "hold $1" <<<"$out" && [ "$(installed_ver "$1")" != "2.0-1" ] \
+       && [ "$(installed_ver bystander)" = "2.0-1" ]; then
+        pass "$2"
+    else
+        fail "$2 (rc=$rc, bystander=$(installed_ver bystander)): $(tail -5 <<<"$out")"
+    fi
+}
+mkenv ignored blackarch
+sed -i 's/^IgnorePkg.*/IgnorePkg = libz/' "$CONF"
+pacman -U --noconfirm "$(mkpkg libz 1.0-1)" "$(mkpkg toolz 1.0-1)" "$(mkpkg bystander 1.0-1)" >/dev/null 2>&1
+publish "$REPO_M" extra "$(mkpkg libz 2.0-1)" "$(mkpkg bystander 2.0-1)"
+publish "$REPO_F" blackarch "$(mkpkg toolz 2.0-1 "libz>=2.0")"
+out=$(safeup --noconfirm </dev/null 2>&1); rc=$?
+held_ok toolz "a foreign package whose satisfier is in IgnorePkg is held"
+
+mkenv ranged2 blackarch
+pacman -U --noconfirm "$(mkpkg libu 1.0-1)" "$(mkpkg toolu 1.0-1)" "$(mkpkg bystander 1.0-1)" >/dev/null 2>&1
+publish "$REPO_M" extra "$(mkpkg libu 2.0-1)" "$(mkpkg bystander 2.0-1)"
+publish "$REPO_F" blackarch "$(mkpkg toolu 2.0-1 "libu<2.0")"
+out=$(safeup --noconfirm </dev/null 2>&1); rc=$?
+held_ok toolu "a foreign package needing libu<2.0, which this same upgrade breaks, is held"
+
+mkenv newdep blackarch
+pacman -U --noconfirm "$(mkpkg toolc 1.0-1)" "$(mkpkg bystander 1.0-1)" >/dev/null 2>&1
+publish "$REPO_M" extra "$(mkpkg bystander 2.0-1)"
+publish "$REPO_F" blackarch "$(mkpkg toolc 2.0-1 newlib)" "$(mkpkg newlib 1.0-1 "libnever>=9")"
+out=$(safeup --noconfirm </dev/null 2>&1); rc=$?
+held_ok toolc "a foreign upgrade pulling in a dependency that cannot be met is held"
+
+mkenv replaced blackarch
+pacman -U --noconfirm "$(mkpkg oldtool 1.0-1)" "$(mkpkg bystander 1.0-1)" >/dev/null 2>&1
+publish "$REPO_M" extra "$(mkpkg bystander 2.0-1)"
+publish "$REPO_F" blackarch "$(MKPKG_EXTRA='replaces = oldtool' mkpkg newtool 1.0-1 "libnever>=9")"
+out=$(safeup --noconfirm </dev/null 2>&1); rc=$?
+if [ "$rc" = "0" ] && grep -q 'hold newtool' <<<"$out" && [ "$(installed_ver oldtool)" = "1.0-1" ] \
+   && [ "$(installed_ver bystander)" = "2.0-1" ]; then
+    pass "a foreign package replacing an installed one, with a dependency that cannot be met, is held"
+else
+    fail "a foreign replacement stopped the upgrade (rc=$rc): $(tail -4 <<<"$out")"
+fi
+
+# ...with nothing else pending: a replacement is not in -Qu, so the pre-flight
+# has no pending package to start from.
+mkenv replacedonly blackarch
+pacman -U --noconfirm "$(mkpkg oldtool 1.0-1)" >/dev/null 2>&1
+publish "$REPO_M" extra "$(mkpkg filler 1.0-1)"
+publish "$REPO_F" blackarch "$(MKPKG_EXTRA='replaces = oldtool' mkpkg newtool 1.0-1 "libnever>=9")"
+out=$(safeup --noconfirm </dev/null 2>&1); rc=$?
+if [ "$rc" = "0" ] && grep -q 'hold newtool' <<<"$out" && [ "$(installed_ver oldtool)" = "1.0-1" ]; then
+    pass "a foreign replacement is held even when nothing else is pending"
+else
+    fail "a replacement alone stopped the run (rc=$rc): $(tail -4 <<<"$out")"
+fi
+
+# An installed foreign package that a Manjaro upgrade breaks. The library is not
+# held, and nothing here can rebuild the package: only its repository can.
+mkenv behind blackarch
+TOOLB=$(mkpkg toolb 1.0-1 "libb<2.0")
+pacman -U --noconfirm "$(mkpkg libb 1.0-1)" "$TOOLB" >/dev/null 2>&1
+publish "$REPO_M" extra "$(mkpkg libb 2.0-1)"
+publish "$REPO_F" blackarch "$TOOLB"
+out=$(safeup --noconfirm </dev/null 2>&1); rc=$?
+if [ "$rc" != "0" ] && grep -q '\[blackarch\] has not caught up' <<<"$out" \
+   && [ "$(installed_ver libb)" = "1.0-1" ]; then
+    pass "a foreign package left behind stops the run with nothing changed, and says which repository"
+else
+    fail "a foreign package left behind was misreported (rc=$rc): $(tail -4 <<<"$out")"
+fi
+
+# 50. A mirror serving garbage. -Sy can succeed; what it fetched cannot be read.
+mkenv garbage blackarch
+pacman -U --noconfirm "$(mkpkg toolg 1.0-1)" >/dev/null 2>&1
+publish "$REPO_F" blackarch "$(mkpkg toolg 2.0-1)"
+head -c 200 /dev/urandom > "$REPO_F/blackarch.db.tar.gz"
+out=$(safeup --check </dev/null 2>&1); rc=$?
+if [ "$rc" = "1" ] && ! grep -q 'nothing pending' <<<"$out"; then
+    pass "unreadable sync databases are an error, never 'nothing pending'"
+else
+    fail "a garbage database read as a clean result (rc=$rc): $(tail -3 <<<"$out")"
+fi
+
+# On a real terminal: script(1) forwards what is written to it as typing.
+on_tty() { # on_tty <printf-format input> <command line>
+    # shellcheck disable=SC2059
+    printf "$1" | SHELL=/bin/bash script -qec "$2" /dev/null 2>&1
+}
+if command -v script >/dev/null; then
+    # 51.
+    mkenv prompt
+    pacman -U --noconfirm "$(mkpkg widget 1.0-1)" >/dev/null 2>&1
+    publish "$REPO_M" extra "$(mkpkg widget 2.0-1)"
+    out=$(on_tty '\004' safeup)
+    if grep -q 'aborted: no answer' <<<"$out" && [ "$(installed_ver widget)" = "1.0-1" ]; then
+        pass "end of file at the master prompt is not a yes"
+    else
+        fail "Ctrl-D upgraded the system (widget=$(installed_ver widget)): $(tail -2 <<<"$out")"
+    fi
+    out=$(on_tty 'nope\n' safeup)
+    if grep -q 'aborted by user' <<<"$out" && [ "$(installed_ver widget)" = "1.0-1" ]; then
+        pass "an unrecognised answer at the master prompt is not a yes"
+    else
+        fail "'nope' upgraded the system (widget=$(installed_ver widget))"
+    fi
+    on_tty '\n' safeup >/dev/null
+    [ "$(installed_ver widget)" = "2.0-1" ] \
+        && pass "Enter at the master prompt takes the [Y] default" \
+        || fail "Enter did not proceed (widget=$(installed_ver widget))"
+
+    # 52.
+    mkenv declined blackarch
+    pacman -U --noconfirm "$(mkpkg toold 1.0-1)" >/dev/null 2>&1
+    publish "$REPO_M" extra "$(mkpkg filler 1.0-1)"
+    publish "$REPO_F" blackarch "$(mkpkg toold 2.0-1 "libnever>=9")"
+    on_tty 'n\n' safeup >/dev/null
+    grep -q 'held' "$SAFEUP_LOG" \
+        && fail "a declined run logged a hold that never happened" \
+        || pass "a declined run logs no hold"
+else
+    skip "51-52: script(1) is missing; the prompts need a real pty"
+fi
+mkenv unlogged blackarch
+pacman -U --noconfirm "$(mkpkg toold 1.0-1)" >/dev/null 2>&1
+publish "$REPO_M" extra "$(mkpkg filler 1.0-1)"
+publish "$REPO_F" blackarch "$(mkpkg toold 2.0-1 "libnever>=9")"
+out=$(SAFEUP_LOG=/nonexistent/dir/safeup.log safeup --noconfirm </dev/null 2>&1)
+grep -q 'could not write to /nonexistent' <<<"$out" \
+    && pass "a log that cannot be written is reported" \
+    || fail "a hold went unrecorded without a word: $(tail -3 <<<"$out")"
+
+# 53. pacman really does exit 0 after Ctrl-C in the middle of a commit.
+mkenv interrupted
+printf '#!/bin/bash\nprintf "%%s\\n" "$*" >> "%s"\n' "$ENV_DIR/aurupdate.log" > "$SHIM/aurupdate"; chmod +x "$SHIM/aurupdate"
+pacman -U --noconfirm "$(mkpkg halfway 1.0-1)" >/dev/null 2>&1
+publish "$REPO_M" extra "$(mkpkg halfway 2.0-1)"
+mv "$SHIM/pacman" "$SHIM/pacman.real"
+printf '#!/bin/bash\ncase " $* " in *" -Syu "*) "%s" -Sy >/dev/null 2>&1; exit 0 ;; esac\nexec "%s" "$@"\n' \
+    "$SHIM/pacman.real" "$SHIM/pacman.real" > "$SHIM/pacman"
+chmod +x "$SHIM/pacman"
+out=$(safeup --noconfirm --aur </dev/null 2>&1); rc=$?
+if [ "$rc" != "0" ] && grep -q 'still pending' <<<"$out" && [ ! -s "$ENV_DIR/aurupdate.log" ]; then
+    pass "pacman exiting 0 with upgrades still pending is not clean, and --aur builds nothing on it"
+else
+    fail "an unfinished upgrade read as clean (rc=$rc, aurupdate: $(cat "$ENV_DIR/aurupdate.log" 2>/dev/null))"
+fi
+
+# 54.
+mkenv scanlog
+publish "$REPO_M" extra "$(mkpkg filler 1.0-1)"
+if [ -f "$ELF/libmain.so" ]; then
+    pacman -U --noconfirm "$(mkpkg brokenapp 1.0-1 --files "$ELF/libmain.so")" >/dev/null 2>&1
+    aur_index brokenapp 1
+    out=$(safeup --noconfirm </dev/null 2>&1); rc=$?
+    if grep -q 'broken AUR packages: 1' "$SAFEUP_LOG" && grep -q 'brokenapp' "$SAFEUP_LOG"; then
+        pass "what the rebuild scan finds reaches the log as well as the terminal"
+    else
+        fail "the scan's findings never reached the log: $(cat "$SAFEUP_LOG")"
+    fi
+else
+    skip "54: needs the broken ELF from 9-11"
+fi
+out=$(PATH="$SHIM:/usr/bin:/bin" "$BIN/safeup" --noconfirm </dev/null 2>&1)
+grep -q 'aur-rebuild-check is not on PATH' <<<"$out" \
+    && pass "a rebuild scan that could not run says so" \
+    || fail "the rebuild scan vanished in silence: $(tail -2 <<<"$out")"
+
+# 55. --aur, both ways
+mkenv aurchain
+printf '#!/bin/bash\nprintf "%%s\\n" "$*" >> "%s"\n' "$ENV_DIR/aurupdate.log" > "$SHIM/aurupdate"
+printf '#!/bin/bash\nprintf "%%s\\n" "$*" >> "%s"\n' "$ENV_DIR/aurinstall.log" > "$SHIM/aurinstall"
+chmod +x "$SHIM/aurupdate" "$SHIM/aurinstall"
+pacman -U --noconfirm "$(mkpkg appq 1.0-1)" "$(mkpkg consq 1.0-1 "appq=1.0")" >/dev/null 2>&1
+publish "$REPO_M" extra "$(mkpkg appq 2.0-1)"
+out=$(safeup --noconfirm --aur </dev/null 2>&1); rc=$?
+if [ "$rc" = "0" ] && grep -q -- '--noconfirm' "$ENV_DIR/aurupdate.log" \
+   && grep -qx -- '--install consq' "$ENV_DIR/aurinstall.log"; then
+    pass "--aur runs aurupdate after a clean upgrade, and hands the broken package to aurinstall"
+else
+    fail "--aur chain wrong (rc=$rc, aurupdate: $(cat "$ENV_DIR/aurupdate.log" 2>/dev/null), aurinstall: $(cat "$ENV_DIR/aurinstall.log" 2>/dev/null))"
+fi
+mkenv aurfail
+printf '#!/bin/bash\nprintf "%%s\\n" "$*" >> "%s"\n' "$ENV_DIR/aurupdate.log" > "$SHIM/aurupdate"; chmod +x "$SHIM/aurupdate"
+mv "$SHIM/pacman" "$SHIM/pacman.real"
+printf '#!/bin/bash\ncase " $* " in *" -Syu "*) echo "error: failed to commit transaction" >&2; exit 1 ;; esac\nexec "%s" "$@"\n' \
+    "$SHIM/pacman.real" > "$SHIM/pacman"
+chmod +x "$SHIM/pacman"
+safeup --noconfirm --aur </dev/null >/dev/null 2>&1; rc=$?
+if [ "$rc" != "0" ] && [ ! -s "$ENV_DIR/aurupdate.log" ]; then
+    pass "--aur builds nothing after a failed repo upgrade"
+else
+    fail "--aur ran after a failed upgrade (rc=$rc)"
+fi
+
+# 56. --noconfirm answers a conflict prompt with no. A person has to answer it.
+mkenv conflict
+pacman -U --noconfirm "$(mkpkg oldp 1.0-1)" "$(mkpkg consp 1.0-1)" >/dev/null 2>&1
+publish "$REPO_M" extra "$(MKPKG_EXTRA='conflict = oldp' mkpkg newp 1.0-1)" "$(mkpkg consp 2.0-1 newp)"
+out=$(safeup --noconfirm </dev/null 2>&1); rc=$?
+if grep -q 're-running interactively' <<<"$out" && [ "$(installed_ver consp)" = "1.0-1" ]; then
+    pass "a conflict --noconfirm refused is retried for a person to answer, nothing changed meanwhile"
+else
+    fail "recovery path 1 did not fire (rc=$rc): $(tail -4 <<<"$out")"
+fi
+
+# 57. assume_for on a range: the installed version stands in.
+mkenv rangedep
+pacman -U --noconfirm "$(mkpkg appr 1.0-1)" "$(mkpkg consr 1.0-1 "appr<2.0")" >/dev/null 2>&1
+publish "$REPO_M" extra "$(mkpkg appr 2.0-1)"
+out=$(safeup --noconfirm </dev/null 2>&1); rc=$?
+if [ "$rc" = "0" ] && [ "$(installed_ver appr)" = "2.0-1" ] && grep -q "consr (AUR) needs 'appr<2.0'" <<<"$out"; then
+    pass "a ranged dependency of an AUR package gets a stand-in, and the repo upgrade lands"
+else
+    fail "ranged stand-in failed (rc=$rc): $(tail -4 <<<"$out")"
+fi
+
+# =============================================================================
+echo ""
+echo "== 58-64. the rebuild scan, and removing a kernel =="
+# =============================================================================
+mkenv elf2
+ELF2="$ENV_DIR/elf"; mkdir -p "$ELF2"
+cp "$ELF"/* "$ELF2/" 2>/dev/null
+SHA=0123456789abcdef0123456789abcdef01234567
+pinned_fixture() { # the AUR's view of a package that passes the gate
+    aur_index "$1" 1
+    printf 'pkgbase = %s\n\tsource = git+https://example.invalid/g.git#commit=%s\n\tsha256sums = SKIP\n\npkgname = %s\n' "$1" "$SHA" "$1" \
+        > "$ENV_DIR/$1.SRCINFO"
+    printf 'pkgname=%s\nsource=("git+https://example.invalid/g.git#commit=%s")\nsha256sums=(SKIP)\n' "$1" "$SHA" \
+        > "$ENV_DIR/$1.PKGBUILD"
+}
+export AUR_SRCINFO_URL="file://$ENV_DIR/%s.SRCINFO" AUR_PKGBUILD_URL="file://$ENV_DIR/%s.PKGBUILD"
+
+# 58.
+if [ -f "$ELF2/libmain.so" ] && command -v script >/dev/null; then
+    pacman -U --noconfirm "$(mkpkg asked 1.0-1 --files "$ELF2/libmain.so")" >/dev/null 2>&1
+    pinned_fixture asked
+    : > "$ENV_DIR/yay.log"
+    out=$(on_tty 'n\n' aur-rebuild-check)
+    if grep -q 'rebuild asked now with yay? \[y/N\]' <<<"$out" && [ ! -s "$ENV_DIR/yay.log" ]; then
+        pass "on a terminal the scan asks, there and then, and no means no"
+    else
+        fail "no inline prompt, or it rebuilt on no (yay: $(cat "$ENV_DIR/yay.log")): $(tail -3 <<<"$out")"
+    fi
+    on_tty 'y\n' aur-rebuild-check >/dev/null
+    grep -q -- '-S --rebuild asked' "$ENV_DIR/yay.log" \
+        && pass "yes at the inline prompt rebuilds, past the pin check" \
+        || fail "yes did not rebuild: $(cat "$ENV_DIR/yay.log")"
+    : > "$ENV_DIR/yay.log"
+    out=$(on_tty '' 'aur-rebuild-check --no-prompt')
+    if grep -q 'fix: aur-rebuild-check --fix' <<<"$out" && ! grep -q 'now with yay' <<<"$out" && [ ! -s "$ENV_DIR/yay.log" ]; then
+        pass "--no-prompt reports and leaves it there, printing the command"
+    else
+        fail "--no-prompt prompted, or printed no command: $(tail -3 <<<"$out")"
+    fi
+    out=$(on_tty '' 'aur-rebuild-check --quiet')
+    grep -q 'now with yay' <<<"$out" \
+        && fail "--quiet, which is for cron, prompted" \
+        || pass "--quiet does not prompt"
+    pacman -R --noconfirm asked >/dev/null 2>&1
+
+    # 59. safeup, for what the upgrade itself broke
+    mkenv offered
+    printf '#!/bin/bash\nprintf "%%s\\n" "$*" >> "%s"\n' "$ENV_DIR/aurinstall.log" > "$SHIM/aurinstall"; chmod +x "$SHIM/aurinstall"
+    pacman -U --noconfirm "$(mkpkg appo 1.0-1)" "$(mkpkg conso 1.0-1 "appo=1.0")" >/dev/null 2>&1
+    publish "$REPO_M" extra "$(mkpkg appo 2.0-1)"
+    out=$(on_tty '\ny\n' safeup)
+    if grep -q 'rebuild conso now, through the pin check' <<<"$out" \
+       && grep -qx -- '--install conso' "$ENV_DIR/aurinstall.log" 2>/dev/null; then
+        pass "safeup offers to rebuild what the upgrade broke, and yes hands it to aurinstall"
+    else
+        fail "no rebuild offer, or no rebuild: $(tail -4 <<<"$out")"
+    fi
+    export AUR_SRCINFO_URL="file://$ENV_DIR/%s.SRCINFO" AUR_PKGBUILD_URL="file://$ENV_DIR/%s.PKGBUILD"
+else
+    skip "58-59: need script(1) and the ELF objects from 9-11"
+fi
+
+# 60. silence from the inspector must not read as health
+mkenv inspector
+ELF2="$ENV_DIR/elf"; mkdir -p "$ELF2"; cp "$ELF"/* "$ELF2/" 2>/dev/null
+if [ -f "$ELF2/libmain.so" ]; then
+    pacman -U --noconfirm "$(mkpkg brokenapp 1.0-1 --files "$ELF2/libmain.so")" >/dev/null 2>&1
+    printf '#!/bin/bash\nexit 1\n' > "$SHIM/readelf"; chmod +x "$SHIM/readelf"
+    out=$(aur-rebuild-check 2>&1); rc=$?
+    if [ "$rc" = "2" ] && grep -q 'nothing was checked' <<<"$out" && ! grep -q 'satisfied library links' <<<"$out"; then
+        pass "a broken readelf is an error, not 'all clean'"
+    else
+        fail "a dead readelf read as a clean system (rc=$rc): $out"
+    fi
+    rm -f "$SHIM/readelf"
+    pacman -R --noconfirm brokenapp >/dev/null 2>&1
+    # An ELF header with nothing behind it.
+    mkdir -p "$ELF2/cut"; head -c 40 "$ELF2/libmain.so" > "$ELF2/cut/libcut.so"
+    pacman -U --noconfirm "$(mkpkg cutapp 1.0-1 --files "$ELF2/cut/libcut.so")" >/dev/null 2>&1
+    out=$(aur-rebuild-check 2>&1); rc=$?
+    if grep -q 'could not be inspected' <<<"$out"; then
+        pass "a file that cannot be parsed is counted, not passed in silence"
+    else
+        fail "a truncated ELF vanished from the report (rc=$rc): $out"
+    fi
+    pacman -R --noconfirm cutapp >/dev/null 2>&1
+
+    # 61. the name alone proves nothing
+    mkdir -p "$ELF2/txt"; echo 'not a library' > "$ELF2/txt/libdep.so"
+    pacman -U --noconfirm "$(mkpkg docapp 1.0-1 --files "$ELF2/libmain.so,$ELF2/txt/libdep.so")" >/dev/null 2>&1
+    aur_index docapp 1
+    out=$(aur-rebuild-check --no-prompt 2>&1); rc=$?
+    if [ "$rc" = "1" ] && grep -q 'docapp' <<<"$out"; then
+        pass "a text file named like the soname does not excuse a binary"
+    else
+        fail "the bundled filter accepted a file that is no library (rc=$rc): $out"
+    fi
+    pacman -R --noconfirm docapp >/dev/null 2>&1
+else
+    skip "60-61: need the ELF objects from 9-11"
+fi
+
+# 62. the loader's rules, at their edges
+if [ -f "$ELF2/app.c" ]; then
+    mklibapp() { # mklibapp <name> <install-dir> <linker flags...>
+        local name=$1 at=$2; shift 2
+        cc -o "$ELF2/$name" "$ELF2/app.c" -L"$ELF2" -l:libdep.so "$@" 2>/dev/null
+        pacman -U --noconfirm \
+            "$(mkpkg "$name" 1.0-1 --at "$at" --files "$ELF2/$name")" \
+            "$(mkpkg "$name-lib" 1.0-1 --at "$at/lib" --files "$ELF2/libdep.so")" >/dev/null 2>&1
+    }
+    mklibapp rpathapp opt/rpathapp -Wl,--disable-new-dtags -Wl,-rpath,'$ORIGIN/lib'
+    out=$(aur-rebuild-check --no-prompt 2>&1); rc=$?
+    [ "$rc" = "0" ] && pass "DT_RPATH with \$ORIGIN is searched" || fail "DT_RPATH not searched (rc=$rc): $out"
+    pacman -R --noconfirm rpathapp rpathapp-lib >/dev/null 2>&1
+    mklibapp braceapp opt/braceapp -Wl,--enable-new-dtags -Wl,-rpath,'${ORIGIN}/lib'
+    out=$(aur-rebuild-check --no-prompt 2>&1); rc=$?
+    [ "$rc" = "0" ] && pass "\${ORIGIN} is expanded like \$ORIGIN" || fail "\${ORIGIN} not expanded (rc=$rc): $out"
+    pacman -R --noconfirm braceapp braceapp-lib >/dev/null 2>&1
+    mklibapp ampapp 'opt/a&b' -Wl,--enable-new-dtags -Wl,-rpath,'$ORIGIN/lib'
+    out=$(aur-rebuild-check --no-prompt 2>&1); rc=$?
+    [ "$rc" = "0" ] && pass "an & in a directory name survives \$ORIGIN" || fail "an & broke \$ORIGIN (rc=$rc): $out"
+    pacman -R --noconfirm ampapp ampapp-lib >/dev/null 2>&1
+    pacman -U --noconfirm "$(mkpkg python 3.13.1-1)" >/dev/null 2>&1
+    echo 'x = 1' > "$ELF2/m.py"
+    pacman -U --noconfirm "$(mkpkg bundlepy 1.0-1 --at opt/bundle/usr/lib/python3.9/site-packages --files "$ELF2/m.py")" >/dev/null 2>&1
+    out=$(aur-rebuild-check --no-prompt 2>&1); rc=$?
+    [ "$rc" = "0" ] && pass "a python3.X tree under /opt is the application's own" \
+                    || fail "an embedded interpreter tree was flagged (rc=$rc): $out"
+    pacman -R --noconfirm bundlepy python >/dev/null 2>&1
+else
+    skip "62: needs the sources from 24"
+fi
+
+# 63. removing a kernel
+mkenv series
+export SAFEUP_UKI_DIR="$ENV_DIR/no-such-dir"
+pacman -U --noconfirm "$(mkpkg linux66 6.6.2-1)" "$(mkpkg linux612 6.12.1-1)" >/dev/null 2>&1
+out=$(FAKE_UNAME_R=6.6.1-1-MANJARO remove-versioned-kernel --noconfirm linux66 2>&1); rc=$?
+if [ "$rc" = "3" ] && [ -n "$(installed_ver linux66)" ]; then
+    pass "the running series is refused after an in-place upgrade: 6.6.1 running, linux66 at 6.6.2"
+else
+    fail "the kernel you are standing on was removed (rc=$rc): $(tail -2 <<<"$out")"
+fi
+out=$(remove-versioned-kernel --noconfirm linux66 2>&1); rc=$?
+if [ "$rc" = "0" ] && grep -q 'left as-is' <<<"$out" && ! ls "$CONF".bak-* >/dev/null 2>&1 \
+   && grep -q 'so nothing was checked' <<<"$out"; then
+    pass "an IgnorePkg with nothing to prune is not rewritten; a missing UKI directory is not called ok"
+else
+    fail "kernel removal output wrong (rc=$rc): $(grep -nE 'IgnorePkg|UKI|checked' <<<"$out" | head -5)"
+fi
+sed -i 's/^IgnorePkg.*/IgnorePkg = linux612 keepme/' "$CONF"
+pacman -U --noconfirm "$(mkpkg linux618 6.18.1-1)" >/dev/null 2>&1
+remove-versioned-kernel --noconfirm linux612 >/dev/null 2>&1
+if ls "$CONF".bak-* >/dev/null 2>&1 && grep -q '^IgnorePkg = keepme' "$CONF" \
+   && grep -q 'linux612' "$(ls "$CONF".bak-* | head -1)"; then
+    pass "the IgnorePkg rewrite keeps a backup of the file as it was"
+else
+    fail "no backup of pacman.conf, or the rewrite is wrong: $(grep IgnorePkg "$CONF")"
+fi
+unset SAFEUP_UKI_DIR
+
+# 64. The scan reads; nothing it inspects is loaded or run. Section 33 catches an
+# `ldd` found on PATH and nothing else, so here the files themselves keep watch:
+# a constructor leaves a mark if the object is ever really loaded, and glibc's
+# LD_DEBUG log names every object any process's loader was asked for, so `ld.so
+# --list`, an absolute /usr/bin/ldd and plain execution are all visible.
+mkenv noload
+TRAP="$ENV_DIR/trap"; mkdir -p "$TRAP"
+cat > "$TRAP/trap.c" <<TRAPC
+#include <fcntl.h>
+__attribute__((constructor)) static void mark(void) { open("$ENV_DIR/ran", O_CREAT | O_WRONLY, 0644); }
+TRAPC
+echo 'int main(void) { return 0; }' > "$TRAP/main.c"
+if cc -shared -fPIC -o "$TRAP/libtrapwatch.so" "$TRAP/trap.c" 2>/dev/null \
+   && cc -o "$TRAP/trapwatch" "$TRAP/main.c" "$TRAP/trap.c" 2>/dev/null; then
+    pacman -U --noconfirm "$(mkpkg trapped 1.0-1 --at opt/trapped --files "$TRAP/libtrapwatch.so,$TRAP/trapwatch")" >/dev/null 2>&1
+    chmod 755 "$ROOT/opt/trapped/trapwatch"     # mkpkg installs 0644: it has to be runnable
+    mkdir -p "$ENV_DIR/lddebug"
+    LD_DEBUG=files LD_DEBUG_OUTPUT="$ENV_DIR/lddebug/ld" aur-rebuild-check --no-prompt >/dev/null 2>&1
+    named=$(grep -l 'trapwatch' "$ENV_DIR"/lddebug/ld.* 2>/dev/null | wc -l)
+    if [ ! -e "$ENV_DIR/ran" ] && [ "$named" = "0" ] && ls "$ENV_DIR"/lddebug/ld.* >/dev/null 2>&1; then
+        pass "no package's file was loaded or run: no constructor fired, and no loader was asked for one"
+    else
+        fail "the scan loaded or ran what it inspects (constructor: $([ -e "$ENV_DIR/ran" ] && echo fired || echo silent), loader logs naming it: $named)"
+    fi
+else
+    skip "64: could not build the watch objects here"
 fi
 
 echo ""

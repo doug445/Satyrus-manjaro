@@ -24,6 +24,10 @@
 
 set -euo pipefail
 
+# With COLUMNS exported, pacman wraps -Qi fields even into a pipe, and a module
+# whose dependency on the kernel sits on a continuation line would be left out.
+unset COLUMNS
+
 ASSUME_YES=0
 ARGS=()
 for a in "$@"; do
@@ -59,17 +63,23 @@ if ! pacman -Qq "$KERNEL" >/dev/null 2>&1; then
     exit 0
 fi
 
-# --- Safety check 2: are we currently booted into it? Two independent tests. ---
+# --- Safety check 2: are we currently booted into it? Three independent tests. ---
 # (a) which package owns the running kernel's module directory;
 # (b) whether the installed version is the running version — `uname -r` on a
 #     Manjaro kernel is "<pkgver>-<pkgrel>-MANJARO". The module directory can
 #     be unowned (force-removed package, manual install) while that kernel is
-#     still the one running, and (a) alone would then wave the removal through.
+#     still the one running, and (a) alone would then wave the removal through;
+# (c) whether the running series is this package: 6.6.x is linux66. After an
+#     upgrade without a reboot, the running version's directory is gone and the
+#     installed version has moved on, so (a) and (b) both miss the kernel you
+#     are standing on.
 RUNNING="$(uname -r)"
+IFS=.- read -r RUN_MAJOR RUN_MINOR _ <<<"$RUNNING"
 RUNNING_PKG="$(pacman -Qoq "/usr/lib/modules/${RUNNING}" 2>/dev/null | head -1 || true)"
 KVER="$(pacman -Q "$KERNEL" 2>/dev/null | awk '{print $2}')"
 KVER="${KVER#*:}"     # an epoch, if any, never appears in uname -r
-if [[ "$RUNNING_PKG" == "$KERNEL" || "$RUNNING" == "$KVER" || "$RUNNING" == "$KVER-"* ]]; then
+if [[ "$RUNNING_PKG" == "$KERNEL" || "$RUNNING" == "$KVER" || "$RUNNING" == "$KVER-"* \
+      || "linux${RUN_MAJOR}${RUN_MINOR}" == "$KERNEL" ]]; then
     echo "ERROR: refusing to remove $KERNEL — you are currently booted into it ($RUNNING)" >&2
     echo "       reboot into another kernel first, then re-run this script" >&2
     exit 3
@@ -102,8 +112,10 @@ EXTRAMODULES=()
 STRANGERS=()
 while read -r p; do
     [[ -z "$p" || "$p" == "$KERNEL-headers" ]] && continue
+    # No `exit` in the awk: under pipefail a pacman killed by SIGPIPE on a long
+    # -Qi would take this whole script down, before anything had been removed.
     deps=$(LC_ALL=C pacman -Qi "$p" 2>/dev/null \
-           | awk '/^Depends On/ { sub(/^[^:]*:[[:space:]]*/, ""); print; exit }')
+           | awk '/^Depends On/ && !seen { sub(/^[^:]*:[[:space:]]*/, ""); print; seen = 1 }')
     depends_on_kernel=0
     for d in $deps; do
         [[ "${d%%[<>=]*}" == "$KERNEL" ]] && { depends_on_kernel=1; break; }
@@ -148,9 +160,16 @@ pacman "${PACMAN_ARGS[@]}" "${TO_REMOVE[@]}"
 # Overridable so the loopback suite can exercise the rewrite against a
 # throwaway pacman root instead of the real /etc.
 PACMAN_CONF="${SAFEUP_PACMAN_CONF:-/etc/pacman.conf}"
-# Where this system keeps its UKIs. Overridable for the same reason: the
-# suite has to exercise BOTH the present and the absent case on any host.
-UKI_DIR="${SAFEUP_UKI_DIR:-/boot/efi/Linux}"
+# Where this system keeps its UKIs: the first of the usual places that exists.
+# Overridable for the same reason: the suite has to exercise BOTH the present and
+# the absent case on any host.
+UKI_DIR="${SAFEUP_UKI_DIR:-}"
+if [[ -z "$UKI_DIR" ]]; then
+    UKI_DIR=/boot/EFI/Linux
+    for d in /boot/EFI/Linux /efi/EFI/Linux /boot/efi/EFI/Linux /boot/efi/Linux; do
+        [[ -d "$d" ]] && { UKI_DIR=$d; break; }
+    done
+fi
 
 PRUNED=$(mktemp)
 trap 'rm -f "$PRUNED"' EXIT
@@ -158,9 +177,14 @@ awk -v remove="${TO_REMOVE[*]}" '
     BEGIN { n = split(remove, r, " "); for (i = 1; i <= n; i++) del[r[i]] = 1 }
     /^[[:space:]]*IgnorePkg[[:space:]]*=/ {
         eq = index($0, "="); lhs = substr($0, 1, eq); rhs = substr($0, eq + 1)
-        m = split(rhs, t, /[[:space:]]+/); out = ""
-        for (i = 1; i <= m; i++) if (t[i] != "" && !(t[i] in del)) out = out " " t[i]
-        print lhs out; next
+        m = split(rhs, t, /[[:space:]]+/); out = ""; gone = 0
+        for (i = 1; i <= m; i++) {
+            if (t[i] == "") continue
+            if (t[i] in del) gone = 1; else out = out " " t[i]
+        }
+        # A line that loses nothing keeps its own spacing: no rewrite, no backup.
+        if (gone) print lhs out; else print
+        next
     }
     { print }' "$PACMAN_CONF" > "$PRUNED"
 if cmp -s "$PRUNED" "$PACMAN_CONF"; then
@@ -183,14 +207,18 @@ for p in "${TO_REMOVE[@]}"; do
     pacman -Qq "$p" >/dev/null 2>&1 && echo "  WARNING: $p still installed" || echo "  ok: $p not installed"
 done
 echo
-echo "2) UKI gone (should not exist):"
-found_uki=0
-for f in "$UKI_DIR"/manjaro-*.efi; do
-    [[ -e "$f" ]] || continue          # unmatched glob stays literal
-    [[ "$f" == *RESCUE* ]] && continue # the rescue image is meant to persist
-    echo "  $f"; found_uki=1
-done
-(( found_uki )) || echo "  ok: no manjaro-*.efi UKIs present"
+echo "2) UKIs present (the removed kernel's must not be among them):"
+if [[ -d "$UKI_DIR" ]]; then
+    found_uki=0
+    for f in "$UKI_DIR"/manjaro-*.efi; do
+        [[ -e "$f" ]] || continue          # unmatched glob stays literal
+        [[ "$f" == *RESCUE* ]] && continue # the rescue image is meant to persist
+        echo "  $f"; found_uki=1
+    done
+    (( found_uki )) || echo "  none"
+else
+    echo "  (no $UKI_DIR here, so nothing was checked)"
+fi
 echo
 echo "3) Modules dir gone:"
 ls -d /usr/lib/modules/*MANJARO 2>/dev/null || echo "  no module dirs found"
