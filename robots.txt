@@ -1,4 +1,4 @@
 User-agent: *
 Allow: /
 
-Sitemap: https://doug445.github.io/manjaro-safeaur-updater/sitemap.xml
+Sitemap: https://doug445.github.io/Satyrus-manjaro/sitemap.xml

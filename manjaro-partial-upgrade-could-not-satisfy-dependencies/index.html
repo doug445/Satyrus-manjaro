@@ -5,17 +5,17 @@
 <meta name="viewport" content="width=device-width, initial-scale=1">
 <title>Manjaro “could not satisfy dependencies” with chaotic-aur</title>
 <meta name="description" content="Manjaro pacman -Syu fails with “could not satisfy dependencies” when chaotic-aur or BlackArch is ahead of Manjaro. Why it happens and how to hold it safely.">
-<link rel="canonical" href="https://doug445.github.io/manjaro-safeaur-updater/manjaro-partial-upgrade-could-not-satisfy-dependencies/">
+<link rel="canonical" href="https://doug445.github.io/Satyrus-manjaro/manjaro-partial-upgrade-could-not-satisfy-dependencies/">
 <meta name="author" content="William MacKinnon">
 <meta name="robots" content="index, follow, max-image-preview:large">
 <meta name="color-scheme" content="light dark">
 <link rel="stylesheet" href="../style.css">
 <meta property="og:type" content="article">
-<meta property="og:site_name" content="Manjaro SafeAUR Updater">
+<meta property="og:site_name" content="Satyrus-manjaro">
 <meta property="og:title" content="Manjaro “could not satisfy dependencies” with chaotic-aur">
 <meta property="og:description" content="Manjaro pacman -Syu fails with “could not satisfy dependencies” when chaotic-aur or BlackArch is ahead of Manjaro. Why it happens and how to hold it safely.">
-<meta property="og:url" content="https://doug445.github.io/manjaro-safeaur-updater/manjaro-partial-upgrade-could-not-satisfy-dependencies/">
-<meta property="og:image" content="https://doug445.github.io/manjaro-safeaur-updater/card.png">
+<meta property="og:url" content="https://doug445.github.io/Satyrus-manjaro/manjaro-partial-upgrade-could-not-satisfy-dependencies/">
+<meta property="og:image" content="https://doug445.github.io/Satyrus-manjaro/card.png">
 <meta property="og:image:width" content="1200">
 <meta property="og:image:height" content="630">
 <meta property="article:published_time" content="2026-10-14">
@@ -31,16 +31,16 @@
       "description": "Manjaro pacman -Syu fails with “could not satisfy dependencies” when chaotic-aur or BlackArch is ahead of Manjaro. Why it happens and how to hold it safely.",
       "datePublished": "2026-10-14",
       "dateModified": "2026-10-26",
-      "image": "https://doug445.github.io/manjaro-safeaur-updater/card.png",
+      "image": "https://doug445.github.io/Satyrus-manjaro/card.png",
       "author": { "@type": "Person", "name": "William MacKinnon", "url": "https://github.com/doug445" },
-      "mainEntityOfPage": "https://doug445.github.io/manjaro-safeaur-updater/manjaro-partial-upgrade-could-not-satisfy-dependencies/",
-      "about": { "@type": "SoftwareApplication", "name": "manjaro-safeaur-updater", "url": "https://doug445.github.io/manjaro-safeaur-updater/", "applicationCategory": "UtilitiesApplication", "operatingSystem": "Manjaro Linux" }
+      "mainEntityOfPage": "https://doug445.github.io/Satyrus-manjaro/manjaro-partial-upgrade-could-not-satisfy-dependencies/",
+      "about": { "@type": "SoftwareApplication", "name": "Satyrus-manjaro", "url": "https://doug445.github.io/Satyrus-manjaro/", "applicationCategory": "UtilitiesApplication", "operatingSystem": "Manjaro Linux" }
     },
     {
       "@type": "BreadcrumbList",
       "itemListElement": [
-        { "@type": "ListItem", "position": 1, "name": "Manjaro SafeAUR Updater", "item": "https://doug445.github.io/manjaro-safeaur-updater/" },
-        { "@type": "ListItem", "position": 2, "name": "Partial upgrades", "item": "https://doug445.github.io/manjaro-safeaur-updater/manjaro-partial-upgrade-could-not-satisfy-dependencies/" }
+        { "@type": "ListItem", "position": 1, "name": "Satyrus-manjaro", "item": "https://doug445.github.io/Satyrus-manjaro/" },
+        { "@type": "ListItem", "position": 2, "name": "Partial upgrades", "item": "https://doug445.github.io/Satyrus-manjaro/manjaro-partial-upgrade-could-not-satisfy-dependencies/" }
       ]
     },
     {
@@ -61,15 +61,15 @@
 
 <nav class="sitenav" aria-label="Site">
   <div class="wrap">
-    <a class="brand" href="../">Manjaro SafeAUR Updater</a>
+    <a class="brand" href="../">Satyrus-manjaro</a>
     <a href="../aur-package-broken-after-manjaro-update/">AUR broken after update</a>
     <a href="../manjaro-partial-upgrade-could-not-satisfy-dependencies/">Partial upgrades</a>
-    <a href="https://github.com/doug445/manjaro-safeaur-updater">GitHub</a>
+    <a href="https://github.com/doug445/Satyrus-manjaro">GitHub</a>
   </div>
 </nav>
 
 <main class="wrap">
-<p class="crumbs"><a href="../">Manjaro SafeAUR Updater</a> › Partial upgrades</p>
+<p class="crumbs"><a href="../">Satyrus-manjaro</a> › Partial upgrades</p>
 <h1>Manjaro “could not satisfy dependencies” with chaotic-aur or BlackArch</h1>
 <p class="lede">You have chaotic-aur, BlackArch or another third-party binary repository enabled, and <code>pacman -Syu</code> stops with <code>error: failed to prepare transaction (could not satisfy dependencies)</code>, or tells you that installing one package breaks a dependency required by another. This page explains what the message means, why Manjaro hits it when Arch does not, the manual ways out that do not make things worse, and exactly how far <code>--ignore</code> can be trusted.</p>
 
@@ -117,7 +117,7 @@ pacman -Qi libfoo</code></pre></div>
 </ul>
 
 <h2 id="ignore">Can <code>--ignore</code> leave a dependency unsatisfied?</h2>
-<p>Not a declared one. <code>--ignore</code> suppresses an upgrade; it does not suppress dependency resolution. pacman still resolves the whole transaction and refuses one that would leave a dependency unsatisfied. The manjaro-safeaur-updater README shows this as a test against a throwaway pacman root rather than an assertion: <code>consumer 1.0</code> requires <code>libX=1.0</code>, both have upgrades pending, and <code>libX</code> is ignored so that <code>consumer 2.0</code> would need a <code>libX 2.0</code> that will not be installed.</p>
+<p>Not a declared one. <code>--ignore</code> suppresses an upgrade; it does not suppress dependency resolution. pacman still resolves the whole transaction and refuses one that would leave a dependency unsatisfied. The Satyrus-manjaro README shows this as a test against a throwaway pacman root rather than an assertion: <code>consumer 1.0</code> requires <code>libX=1.0</code>, both have upgrades pending, and <code>libX</code> is ignored so that <code>consumer 2.0</code> would need a <code>libX 2.0</code> that will not be installed.</p>
 <div class="codeblock"><pre><code>$ pacman -Syu --noconfirm --ignore libX
 warning: ignoring package libX-2.0-1
 warning: cannot resolve "libX=2.0", a dependency of "consumer"
@@ -131,16 +131,16 @@ libX 1.0-1
 
 $ pacman -Dk                      # pacman's own consistency audit
 No database errors have been found!</code></pre></div>
-<p>Nothing moved, and pacman’s database check finds nothing wrong. The transcript is section 19 of <a href="https://github.com/doug445/manjaro-safeaur-updater/blob/main/tests/loopback-core-test.sh"><code>tests/loopback-core-test.sh</code></a> and runs in CI against real pacman transactions. It tests pacman’s behaviour, not any wrapper’s: if you <code>--ignore</code> the wrong thing, pacman refuses rather than installing a broken set.</p>
+<p>Nothing moved, and pacman’s database check finds nothing wrong. The transcript is section 19 of <a href="https://github.com/doug445/Satyrus-manjaro/blob/main/tests/loopback-core-test.sh"><code>tests/loopback-core-test.sh</code></a> and runs in CI against real pacman transactions. It tests pacman’s behaviour, not any wrapper’s: if you <code>--ignore</code> the wrong thing, pacman refuses rather than installing a broken set.</p>
 <div class="note">
 <p><strong>Where that guarantee ends.</strong> pacman checks the dependencies packages <em>declare</em>. It cannot see a soname recorded inside a binary unless the package also declares it as a dependency. The guarantee is only as strong as the packages’ metadata, which is why the direction of a hold still matters. And any tool that automates <code>--ignore</code> inherits this property rather than adding to it: you are trusting pacman’s resolver, not the tool.</p>
 </div>
 
 <h2 id="automated">Automating the hold</h2>
 <div class="tool">
-<p><strong>Automated:</strong> <code>safeup</code>, from <a href="https://github.com/doug445/manjaro-safeaur-updater">manjaro-safeaur-updater</a>, makes this decision before <code>pacman -Syu</code> rather than after it fails. It reads your repositories from <code>pacman.conf</code> and treats any that is not <code>core</code>, <code>extra</code>, <code>multilib</code>, <code>community</code>, <code>core-testing</code>, <code>extra-testing</code> or <code>multilib-testing</code> as foreign; with none, it passes straight through to plain <code>pacman -Syu</code>. Its pre-flight refreshes a private snapshot of the sync databases, the way <code>checkupdates</code> does, so your real database is never refreshed without an upgrade. For each pending upgrade it judges the copy pacman will actually install, the first repository in <code>pacman.conf</code> order that carries it. If that copy is foreign, each version-constrained dependency must be satisfied either by what is installed (<code>pacman -T</code>) or by a package this same upgrade brings in (<code>pacman -Sddp</code>). A package that fails both is held with <code>--ignore</code>, and everything else upgrades in one <code>pacman -Syu</code>.</p>
+<p><strong>Automated:</strong> <code>safeup</code>, from <a href="https://github.com/doug445/Satyrus-manjaro">Satyrus-manjaro</a>, makes this decision before <code>pacman -Syu</code> rather than after it fails. It reads your repositories from <code>pacman.conf</code> and treats any that is not <code>core</code>, <code>extra</code>, <code>multilib</code>, <code>community</code>, <code>core-testing</code>, <code>extra-testing</code> or <code>multilib-testing</code> as foreign; with none, it passes straight through to plain <code>pacman -Syu</code>. Its pre-flight refreshes a private snapshot of the sync databases, the way <code>checkupdates</code> does, so your real database is never refreshed without an upgrade. For each pending upgrade it judges the copy pacman will actually install, the first repository in <code>pacman.conf</code> order that carries it. If that copy is foreign, each version-constrained dependency must be satisfied either by what is installed (<code>pacman -T</code>) or by a package this same upgrade brings in (<code>pacman -Sddp</code>). A package that fails both is held with <code>--ignore</code>, and everything else upgrades in one <code>pacman -Syu</code>.</p>
 <p>If pacman still reports <code>installing X breaks dependency … required by Y</code>, <code>safeup</code> does not hold <code>X</code>: that is a Manjaro package, often a library, and holding a library while the rest of the repo moves on is exactly the partial upgrade to avoid. When <code>Y</code> is an AUR package, the repo upgrade goes ahead in full, with <code>--assume-installed</code> standing in for the dependency <code>Y</code> declared, and <code>Y</code> is named for a rebuild against the new library (<code>safeup --aur</code> rebuilds it straight away, behind the pin check). The AUR package is the one out of date, so it is the one left broken until it is rebuilt. When <code>Y</code> comes from a repository, the mirrors disagree mid-sync: <code>safeup</code> changes nothing and says to wait. Up to 1.5.0 this path held <code>X</code>. Every hold, and every needed rebuild, is printed and appended to <code>/var/log/safeup.log</code>, so nothing is left to chase blind. <code>safeup --check</code> lists pending upgrades and the holds a real run would make, without root and without changing anything (it needs <code>fakeroot</code>, from <code>base-devel</code>). After a successful upgrade it runs <code>aur-rebuild-check</code>.</p>
-<p>The README states its limitation plainly: “<code>safeup</code> does not pre-check whether a package it holds is itself required by something else in the same transaction. It relies on pacman refusing, and then acts on pacman’s own message.” It also cannot make Manjaro track Arch, or install a package that genuinely needs a newer library; holding it is the correct outcome. See <a href="https://github.com/doug445/manjaro-safeaur-updater#what-this-does-not-do">What this does not do</a>.</p>
+<p>The README states its limitation plainly: “<code>safeup</code> does not pre-check whether a package it holds is itself required by something else in the same transaction. It relies on pacman refusing, and then acts on pacman’s own message.” It also cannot make Manjaro track Arch, or install a package that genuinely needs a newer library; holding it is the correct outcome. See <a href="https://github.com/doug445/Satyrus-manjaro#what-this-does-not-do">What this does not do</a>.</p>
 </div>
 
 <h2 id="faq">Questions</h2>
@@ -158,17 +158,17 @@ No database errors have been found!</code></pre></div>
 <li>Manjaro Wiki, <a href="https://wiki.manjaro.org/index.php?title=Switching_Branches">Switching Branches</a> (Stable, Testing and Unstable timing)</li>
 <li>Dibakar Ghosh, <a href="https://www.howtogeek.com/why-i-avoid-manjaro-even-though-i-love-arch-linux/">3 Reasons I Avoid Manjaro Even Though I Love Arch Linux</a>, How-To Geek, 1 September 2025: “on Manjaro, the necessary dependency might be running on an older version, which has some compatibility issues with the AUR package.”</li>
 <li>linux-aarhus, <a href="https://forum.manjaro.org/t/responsible-use-of-aur/86392">Responsible use of AUR</a>, Manjaro Linux Forum, 14 October 2021</li>
-<li><a href="https://github.com/doug445/manjaro-safeaur-updater#but-this-automates-pacman---ignore">manjaro-safeaur-updater README: “But this automates <code>pacman --ignore</code>”</a> (the transcript and the stated limitation)</li>
+<li><a href="https://github.com/doug445/Satyrus-manjaro#but-this-automates-pacman---ignore">Satyrus-manjaro README: “But this automates <code>pacman --ignore</code>”</a> (the transcript and the stated limitation)</li>
 </ul>
 
 </main>
 
 <footer>
   <div class="wrap">
-    <p><strong>manjaro-safeaur-updater</strong> by William MacKinnon
+    <p><strong>Satyrus-manjaro</strong> by William MacKinnon
       (<a href="https://github.com/doug445">doug445</a>) ·
-      <a href="https://github.com/doug445/manjaro-safeaur-updater">Source on GitHub</a> ·
-      <a href="https://github.com/doug445/manjaro-safeaur-updater/issues">Issues</a></p>
+      <a href="https://github.com/doug445/Satyrus-manjaro">Source on GitHub</a> ·
+      <a href="https://github.com/doug445/Satyrus-manjaro/issues">Issues</a></p>
     <p>Independent project. Not affiliated with or endorsed by Manjaro or Arch Linux. The AUR is not supported by either.</p>
     <p>Copyright © 2026 William MacKinnon. Code under the MIT licence. Page last updated 26 October 2026.</p>
   </div>
