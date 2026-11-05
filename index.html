@@ -3,19 +3,19 @@
 <head>
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1">
-<title>Manjaro SafeAUR Updater: use the AUR without breakage</title>
+<title>Satyrus-manjaro: use the AUR without breakage</title>
 <meta name="description" content="Use the AUR on Manjaro without breaking your system: a guard against partial upgrades from Manjaro's lag behind Arch, a scan for AUR packages broken by a library bump, and pinned sources.">
-<link rel="canonical" href="https://doug445.github.io/manjaro-safeaur-updater/">
+<link rel="canonical" href="https://doug445.github.io/Satyrus-manjaro/">
 <meta name="author" content="William MacKinnon">
 <meta name="robots" content="index, follow, max-image-preview:large">
 <meta name="color-scheme" content="light dark">
 <link rel="stylesheet" href="style.css">
 <meta property="og:type" content="website">
-<meta property="og:site_name" content="Manjaro SafeAUR Updater">
-<meta property="og:title" content="Manjaro SafeAUR Updater: use the AUR on Manjaro without breaking your system">
+<meta property="og:site_name" content="Satyrus-manjaro">
+<meta property="og:title" content="Satyrus-manjaro: use the AUR on Manjaro without breaking your system">
 <meta property="og:description" content="pacman and yay wrappers that close the three failures behind most Manjaro AUR breakage: partial upgrades, stale sonames, and unpinned VCS sources. 108 tests, 49 against real pacman.">
-<meta property="og:url" content="https://doug445.github.io/manjaro-safeaur-updater/">
-<meta property="og:image" content="https://doug445.github.io/manjaro-safeaur-updater/card.png">
+<meta property="og:url" content="https://doug445.github.io/Satyrus-manjaro/">
+<meta property="og:image" content="https://doug445.github.io/Satyrus-manjaro/card.png">
 <meta property="og:image:width" content="1200">
 <meta property="og:image:height" content="630">
 <meta name="twitter:card" content="summary_large_image">
@@ -25,15 +25,15 @@
   "@graph": [
     {
       "@type": "SoftwareApplication",
-      "name": "Manjaro SafeAUR Updater",
+      "name": "Satyrus-manjaro",
       "description": "pacman and yay wrappers for Manjaro: a partial-upgrade guard for foreign repositories, a post-upgrade scan for AUR packages broken by a library or python bump, a pinning policy for PKGBUILD VCS sources, and chroot builds via manjaro-chrootbuild.",
       "applicationCategory": "UtilitiesApplication",
       "operatingSystem": "Manjaro Linux",
       "softwareVersion": "1.6.0",
       "license": "https://opensource.org/licenses/MIT",
-      "url": "https://doug445.github.io/manjaro-safeaur-updater/",
-      "downloadUrl": "https://github.com/doug445/manjaro-safeaur-updater",
-      "codeRepository": "https://github.com/doug445/manjaro-safeaur-updater",
+      "url": "https://doug445.github.io/Satyrus-manjaro/",
+      "downloadUrl": "https://github.com/doug445/Satyrus-manjaro",
+      "codeRepository": "https://github.com/doug445/Satyrus-manjaro",
       "offers": { "@type": "Offer", "price": "0", "priceCurrency": "USD" },
       "author": { "@type": "Person", "name": "William MacKinnon", "url": "https://github.com/doug445" }
     },
@@ -54,10 +54,10 @@
 
 <nav class="sitenav" aria-label="Site">
   <div class="wrap">
-    <a class="brand" href="./">Manjaro SafeAUR Updater</a>
+    <a class="brand" href="./">Satyrus-manjaro</a>
     <a href="aur-package-broken-after-manjaro-update/">AUR broken after update</a>
     <a href="manjaro-partial-upgrade-could-not-satisfy-dependencies/">Partial upgrades</a>
-    <a href="https://github.com/doug445/manjaro-safeaur-updater">GitHub</a>
+    <a href="https://github.com/doug445/Satyrus-manjaro">GitHub</a>
   </div>
 </nav>
 
@@ -73,9 +73,9 @@
       what you reviewed. No daemon. 108 tests, 49 of them real <code>pacman</code> transactions.
     </p>
     <div class="cta">
-      <a class="btn primary" href="https://github.com/doug445/manjaro-safeaur-updater">Get it on GitHub</a>
+      <a class="btn primary" href="https://github.com/doug445/Satyrus-manjaro">Get it on GitHub</a>
       <a class="btn" href="#quick-start">Quick start</a>
-      <a class="btn" href="https://github.com/doug445/manjaro-safeaur-updater#what-this-does-not-do">What it does not do</a>
+      <a class="btn" href="https://github.com/doug445/Satyrus-manjaro#what-this-does-not-do">What it does not do</a>
     </div>
     <ul class="facts" aria-label="At a glance">
       <li>v1.6.0</li><li>Free and open source</li><li>MIT</li><li>bash only</li><li>108 tests</li><li>manjaro-chrootbuild</li>
@@ -130,11 +130,11 @@
   <li>Names with a <code>+</code> work; an installed <code>python311</code> is no longer flagged as stale.</li>
 </ul>
 <p>Every fix has a test that fails against 1.5.0.
-  <a href="https://github.com/doug445/manjaro-safeaur-updater/releases/tag/v1.6.0">Full release notes</a>.</p>
+  <a href="https://github.com/doug445/Satyrus-manjaro/releases/tag/v1.6.0">Full release notes</a>.</p>
 
 <h2 id="quick-start">Quick start</h2>
-<div class="codeblock"><pre><code>git clone https://github.com/doug445/manjaro-safeaur-updater.git
-cd manjaro-safeaur-updater
+<div class="codeblock"><pre><code>git clone https://github.com/doug445/Satyrus-manjaro.git
+cd Satyrus-manjaro
 ./deploy.sh</code></pre></div>
 <div class="codeblock"><pre><code>safeup                 # pacman -Syu, with the partial-upgrade guard
 safeup --check         # what it would do: no root, nothing changed
@@ -206,10 +206,10 @@ aur-rebuild-check      # what needs rebuilding after a library or python bump</c
 
 <footer>
   <div class="wrap">
-    <p><strong>Manjaro SafeAUR Updater</strong> by William MacKinnon
+    <p><strong>Satyrus-manjaro</strong> by William MacKinnon
       (<a href="https://github.com/doug445">doug445</a>) ·
-      <a href="https://github.com/doug445/manjaro-safeaur-updater">Source on GitHub</a> ·
-      <a href="https://github.com/doug445/manjaro-safeaur-updater/releases">Releases</a></p>
+      <a href="https://github.com/doug445/Satyrus-manjaro">Source on GitHub</a> ·
+      <a href="https://github.com/doug445/Satyrus-manjaro/releases">Releases</a></p>
     <p>Independent project. Not affiliated with or endorsed by Manjaro or Arch Linux. The AUR is not supported by either.</p>
     <p>Copyright © 2026 William MacKinnon. Code under the MIT licence. Page last updated 26 October 2026.</p>
   </div>
