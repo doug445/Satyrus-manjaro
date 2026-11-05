@@ -37,7 +37,8 @@
 #   3.  a #tag= source is REJECTED — tags are mutable, that is the whole point
 #   4.  a #branch= source is REJECTED (a branch moves every push)
 #   5.  a short (<40 hex) commit fragment is REJECTED, not silently accepted
-#   6.  non-VCS sources (tarballs) are ACCEPTED — sha256sums already cover them
+#   6.  non-VCS sources (tarballs) are ACCEPTED when a real checksum covers
+#       them (51-60 are the cases where nothing does)
 #   7.  a "name::git+..." prefixed source is still recognised as VCS
 #   8.  multi-source packages reject if ANY one source is unpinned
 #   9.  every rejection is reported, not just the first (multi-package runs)
@@ -109,6 +110,21 @@
 #   49. variables in a pin, a VCS-looking pkgdesc, comments and build() do not
 #       trip the tripwire
 #   50. a PKGBUILD that cannot be fetched is an ERROR, never a pass
+#   51. a remote tarball whose only checksum is SKIP is REJECTED — makepkg
+#       verifies nothing, and builds whatever the URL serves that day
+#   52. SKIP under one algorithm is fine when another carries a real hash
+#   53. `source_x86_64` is judged against `sha256sums_x86_64`, position by
+#       position: a hash in the plain array does not launder an arch source
+#   54. SKIP plus a detached signature in the source list is ACCEPTED — both
+#       the `.sig` beside the file and kernel.org's `.tar.sign` for a `.tar.xz`
+#   55. a "signature" that signs nothing in the list verifies nothing
+#   56. `cksums` is a CRC, not an integrity check: alone, it is REJECTED
+#   57. a local file (it ships in the AUR repo, beside the PKGBUILD you read)
+#       is not a download, and SKIP on it is not a hole
+#   58. a .SRCINFO that shows a hash over a PKGBUILD that says SKIP is REJECTED
+#   59. SKIP on the VCS sources of a realistic PKGBUILD does not trip that
+#   60. aurupdate refuses a pending upgrade whose maintainer switched a
+#       checksum to SKIP; yay never runs
 #
 # Run:  bash tests/pin-fixture-test.sh
 # Requires: bash >= 4, git, curl (with file:// support), awk, coreutils.
@@ -238,15 +254,46 @@ export WORK_CB_LOG="$WORK/chrootbuild.log"
 
 # Write a .SRCINFO fixture: srcinfo <pkg> <source-line>... — and the PKGBUILD
 # it describes, with the same sources, since the pin check compares the two.
+# Checksums are what a real package carries: SKIP for a VCS source (makepkg has
+# nothing to hash there; the pin is the integrity), a sha256 for anything else.
+HASH_A=aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa
+sum_for() {
+    case "${1#*::}" in
+        git+*|git://*|hg+*|hg://*|svn+*|svn://*|bzr+*|bzr://*|fossil+*|fossil://*) echo SKIP ;;
+        *) echo "$HASH_A" ;;
+    esac
+}
 srcinfo() {
     local pkg="$1"; shift
     { printf 'pkgbase = %s\n\tpkgver = 1.0\n\tpkgrel = 1\n' "$pkg"
       for s in "$@"; do printf '\tsource = %s\n' "$s"; done
+      for s in "$@"; do printf '\tsha256sums = %s\n' "$(sum_for "$s")"; done
       printf '\npkgname = %s\n' "$pkg"
     } > "$WORK/srcinfo/$pkg.SRCINFO"
     { printf 'pkgname=%s\npkgver=1.0\npkgrel=1\nsource=(' "$pkg"
       for s in "$@"; do printf '"%s"\n        ' "$s"; done
+      printf ')\nsha256sums=('
+      for s in "$@"; do printf "'%s'\n            " "$(sum_for "$s")"; done
       printf ')\n'
+    } > "$WORK/pkgbuild/$pkg.PKGBUILD"
+}
+
+# Write a fixture from literal .SRCINFO lines: fixture <pkg> "<key> = <value>"...
+# The PKGBUILD is built from the same lines, one array per key, in order.
+fixture() {
+    local pkg="$1" line key; shift
+    local -A arr=(); local -a order=()
+    { printf 'pkgbase = %s\n\tpkgver = 1.0\n\tpkgrel = 1\n' "$pkg"
+      for line in "$@"; do printf '\t%s\n' "$line"; done
+      printf '\npkgname = %s\n' "$pkg"
+    } > "$WORK/srcinfo/$pkg.SRCINFO"
+    for line in "$@"; do
+        key=${line%% = *}
+        [[ -n "${arr[$key]+x}" ]] || order+=("$key")
+        arr[$key]+="'${line#* = }' "
+    done
+    { printf 'pkgname=%s\npkgver=1.0\npkgrel=1\n' "$pkg"
+      for key in "${order[@]}"; do printf '%s=(%s)\n' "$key" "${arr[$key]% }"; done
     } > "$WORK/pkgbuild/$pkg.PKGBUILD"
 }
 
@@ -309,7 +356,7 @@ rpc     shortsha 1
 srcinfo tarball     "https://example.invalid/f-1.0.tar.gz"
 rpc     tarball 1
 [[ $(check tarball) == 0 ]] \
-    && pass "non-VCS tarball source accepted (sha256sums cover it)" \
+    && pass "non-VCS tarball source accepted (a real sha256 covers it)" \
     || fail "tarball source rejected: $(cat "$WORK/out")"
 
 # `name::git+url` is the renamed-source form. Stripping the prefix is what makes
@@ -910,6 +957,141 @@ if [[ $rc == 1 ]] && grep -q 'cannot fetch the PKGBUILD' "$WORK/out"; then
 else
     fail "unfetchable PKGBUILD did not surface as an error (rc=$rc)"
 fi
+
+# =============================================================================
+echo "== 51-60. a download nothing verifies =="
+# =============================================================================
+# "Tarballs pass, sha256sums cover them" was the gate's stated reason for
+# looking at VCS sources only. makepkg accepts SKIP in a checksum array for ANY
+# source, and then verifies nothing: a tarball URL under SKIP is exactly as
+# mutable as an unpinned branch, and it used to walk through.
+T=https://example.invalid
+
+# 51. the hole itself
+fixture skiptar "source = $T/latest.tar.gz" "sha256sums = SKIP"
+rpc skiptar 1
+rc=$(check skiptar)
+if [[ $rc == 1 ]] && grep -q 'REJECT skiptar' "$WORK/out" && grep -q 'latest.tar.gz' "$WORK/out"; then
+    pass "a remote tarball whose only checksum is SKIP is REJECTED, naming the URL"
+else
+    fail "an unverified tarball was accepted (rc=$rc): $(cat "$WORK/out")"
+fi
+
+# 52. makepkg checks every algorithm given; one real hash is verification
+fixture twoalgo "source = $T/a.tar.gz" "sha256sums = SKIP" "b2sums = $HASH_A$HASH_A"
+rpc twoalgo 1
+[[ $(check twoalgo) == 0 ]] \
+    && pass "SKIP under sha256sums with a real b2sums is accepted" \
+    || fail "a source with one real checksum was rejected: $(cat "$WORK/out")"
+
+# 53. arch arrays pair with arch checksums, by position
+fixture archskip "source = $T/common.tar.gz" "sha256sums = $HASH_A" \
+                 "source_x86_64 = $T/blob-x86_64.tar.gz" "sha256sums_x86_64 = SKIP"
+rpc archskip 1
+rc=$(check archskip)
+if [[ $rc == 1 ]] && grep -q 'blob-x86_64.tar.gz' "$WORK/out" && ! grep -q 'common.tar.gz' "$WORK/out"; then
+    pass "SKIP under sha256sums_x86_64 is REJECTED; the plain array's hash does not cover it"
+else
+    fail "an arch-specific unverified source slipped through (rc=$rc): $(cat "$WORK/out")"
+fi
+fixture posskip "source = $T/one.tar.gz" "source = $T/two.tar.gz" \
+                "sha256sums = $HASH_A" "sha256sums = SKIP"
+rpc posskip 1
+rc=$(check posskip)
+if [[ $rc == 1 ]] && grep -q 'two.tar.gz' "$WORK/out" && ! grep -q 'one.tar.gz' "$WORK/out"; then
+    pass "checksums pair with sources by position: only the SKIP one is named"
+else
+    fail "positional pairing wrong (rc=$rc): $(cat "$WORK/out")"
+fi
+
+# 54. the signature alternative. makepkg verifies a source against a detached
+# signature listed beside it, and refuses the build when that fails; SKIP on
+# both is how signed upstreams are normally packaged.
+fixture signed "source = $T/s-1.0.tar.gz" "source = $T/s-1.0.tar.gz.sig" \
+               "validpgpkeys = ABCDEF0123456789ABCDEF0123456789ABCDEF01" \
+               "sha256sums = SKIP" "sha256sums = SKIP"
+rpc signed 1
+[[ $(check signed) == 0 ]] \
+    && pass "SKIP with a detached .sig in the source list is accepted" \
+    || fail "a signed source was rejected: $(cat "$WORK/out")"
+# kernel.org signs the uncompressed tar: linux.tar.xz is verified by linux.tar.sign
+fixture ksigned "source = $T/k-6.1.tar.xz" "source = $T/k-6.1.tar.sign" \
+                "sha256sums = SKIP" "sha256sums = SKIP"
+rpc ksigned 1
+[[ $(check ksigned) == 0 ]] \
+    && pass "a .tar.sign covering a .tar.xz (kernel.org's form) is accepted" \
+    || fail "kernel.org-style signature was rejected: $(cat "$WORK/out")"
+
+# 55. a .sig that signs nothing listed is just another unverified download
+fixture orphansig "source = $T/real.tar.gz" "source = $T/other.tar.gz.sig" \
+                  "sha256sums = SKIP" "sha256sums = SKIP"
+rpc orphansig 1
+rc=$(check orphansig)
+if [[ $rc == 1 ]] && grep -q 'real.tar.gz' "$WORK/out"; then
+    pass "a signature for some other file does not cover a SKIP source"
+else
+    fail "an unrelated .sig laundered a SKIP source (rc=$rc): $(cat "$WORK/out")"
+fi
+
+# 56. cksums is POSIX cksum — a CRC anyone can match
+fixture crconly "source = $T/c.tar.gz" "cksums = 1234567890"
+rpc crconly 1
+[[ $(check crconly) == 1 ]] \
+    && pass "a CRC (cksums) alone is not verification: REJECTED" \
+    || fail "a CRC-only source was accepted"
+
+# 57. a local file is not a download
+fixture localskip "source = $T/l.tar.gz" "source = fix-build.patch" \
+                  "sha256sums = $HASH_A" "sha256sums = SKIP"
+rpc localskip 1
+[[ $(check localskip) == 0 ]] \
+    && pass "SKIP on a local file shipped in the AUR repo is accepted" \
+    || fail "a local file under SKIP was rejected: $(cat "$WORK/out")"
+
+# 58. the spoof, checksum edition: .SRCINFO shows a hash, the PKGBUILD — the
+# file makepkg actually obeys — says SKIP. Unquoted and side by side, as a
+# PKGBUILD may write them: the count is of array elements, not of a pattern.
+fixture sumspoof "source = git+$T/p.git#commit=$SHA_A" "source = $T/p.tar.gz" \
+                 "sha256sums = SKIP" "sha256sums = $HASH_A"
+rpc sumspoof 1
+pkgbuild sumspoof "pkgname=sumspoof
+source=(\"git+$T/p.git#commit=$SHA_A\" \"$T/p.tar.gz\")
+sha256sums=(SKIP SKIP)"
+rc=$(check sumspoof)
+if [[ $rc == 1 ]] && grep -q 'does not match its .SRCINFO' "$WORK/out" && grep -q 'sha256sums' "$WORK/out"; then
+    pass "a .SRCINFO showing a hash over a PKGBUILD that says SKIP is REJECTED"
+else
+    fail "a hidden SKIP was accepted (rc=$rc): $(cat "$WORK/out")"
+fi
+
+# 59. no false alarm: SKIP where it belongs, comments, += and a multi-line array
+fixture sumreal "source = git+$T/r.git#commit=$SHA_A" "source = $T/r.tar.gz" \
+                "source = $T/r2.tar.gz" \
+                "sha256sums = SKIP" "sha256sums = $HASH_A" "sha256sums = $HASH_A"
+rpc sumreal 1
+pkgbuild sumreal "pkgname=sumreal
+source=(\"git+$T/r.git#commit=$SHA_A\"
+        \"$T/r.tar.gz\")
+# sha256sums=('SKIP' 'SKIP' 'SKIP')
+sha256sums=('SKIP'   # the git source: SKIP is correct here
+            '$HASH_A')
+source+=(\"$T/r2.tar.gz\")
+sha256sums+=('$HASH_A')
+build() { echo \"sha256sums=('SKIP')\"; }"
+[[ $(check sumreal) == 0 ]] \
+    && pass "SKIP on a pinned VCS source, comments and += do not trip the checksum tripwire" \
+    || fail "realistic checksum arrays falsely rejected: $(cat "$WORK/out")"
+
+# 60. the upgrade that quietly drops verification
+printf 'skiptar 1.0 -> 2.0\n' > "$WORK_YAY_QUA"
+: > "$WORK_YAY_LOG"
+aurupdate >/dev/null 2>&1; rc=$?
+if (( rc == 1 )) && ! grep -q -- '-Sua' "$WORK_YAY_LOG"; then
+    pass "aurupdate refuses a pending upgrade whose download nothing verifies"
+else
+    fail "aurupdate let an unverified download through (rc=$rc)"
+fi
+: > "$WORK_YAY_QUA"
 
 echo ""
 echo "==================================================="

@@ -3,8 +3,9 @@
 #
 # Runs aur-pin-check against every AUR package that has a pending upgrade,
 # and every AUR dependency those upgrades would pull in. If any fail, aborts:
-# a maintainer adding an unpinned VCS source on upgrade is stopped here, and so
-# is a .SRCINFO that hides one from its PKGBUILD.
+# a maintainer adding an unpinned VCS source on upgrade is stopped here, so is
+# one switching a checksum to SKIP, and so is a .SRCINFO that hides either
+# from its PKGBUILD.
 #
 # A pin is not a review. A hostile maintainer can do anything in build(), so
 # the suite's ~/.config/yay/config.json keeps yay's PKGBUILD diff menu ON

@@ -1,5 +1,6 @@
 #!/bin/bash
-# aur-pin-check — refuse AUR packages whose PKGBUILD uses unpinned VCS sources.
+# aur-pin-check — refuse AUR packages whose PKGBUILD uses unpinned VCS sources,
+# or downloads something nothing verifies.
 #
 # Pinning policy — every VCS source in the PKGBUILD must carry the fragment that
 # names one immutable revision for that VCS:
@@ -9,9 +10,26 @@
 #   svn, bzr      #revision=<N>
 #
 # Tag fragments (`#tag=...`) and branch fragments are REJECTED because upstream
-# can re-point them. Non-VCS sources are always acceptable — their integrity is
-# guaranteed by PKGBUILD's sha256sums. A `?signed` query after the fragment is
-# makepkg asking for a signature check on top of the pin; it is accepted.
+# can re-point them. A `?signed` query after the fragment is makepkg asking for
+# a signature check on top of the pin; it is accepted.
+#
+# Checksum policy — every other REMOTE source must be verified by something:
+#
+#   a real checksum   in md5sums, sha1sums, sha224sums, sha256sums, sha384sums,
+#                     sha512sums or b2sums, at the source's own position, in
+#                     the array of its own architecture
+#   or a signature    a detached .sig/.sign/.asc for it in the source list,
+#                     which makepkg verifies and refuses the build without
+#
+# `SKIP` in a checksum array tells makepkg to verify nothing, and it accepts
+# that for any source, not only VCS ones. A tarball URL under SKIP is as
+# mutable as an unpinned branch — what you audited last week is whatever the
+# server sends today — and up to 1.7.0 it passed here on the stated ground
+# that "sha256sums cover it". `cksums` does not count: it is a CRC, and a CRC
+# is matched by anyone who wants to. A local file (no `://`) is not a
+# download; it ships in the AUR repository beside the PKGBUILD and is read
+# with it. There is no allowlist for this: a moving download has no revision
+# to record, so there is nothing a row could re-verify.
 #
 # The git/hg/fossil pins are content-addressed: the hash IS the tree. An svn or
 # bzr revision number is not — it identifies a revision only as long as the
@@ -27,8 +45,9 @@
 # .SRCINFO is written by the maintainer, and the AUR never checks it against
 # the PKGBUILD. So the PKGBUILD is read too — as text, never executed — and a
 # package is REJECTED when its source arrays name more unpinned VCS sources
-# than its .SRCINFO admits to. That catches a .SRCINFO that hides a source. It
-# is a tripwire, not a proof: a PKGBUILD is code, and one that builds its URL
+# than its .SRCINFO admits to, or its checksum arrays say SKIP more often than
+# the .SRCINFO does. That catches a .SRCINFO that hides a source, or shows a
+# hash makepkg will never check. It is a tripwire, not a proof: a PKGBUILD is code, and one that builds its URL
 # at run time, or does its damage in build(), passes any static check. The
 # defence against a hostile maintainer is reading the PKGBUILD.
 #
@@ -60,9 +79,9 @@
 # repos forever), and whether it is an installed orphan that should simply be
 # removed rather than allowlisted.
 #
-# Exit: 0 all pinned (or no VCS sources); 1 any unpinned, or any package whose
-#       .SRCINFO could not be fetched (an unchecked package is never a pass);
-#       2 usage error.
+# Exit: 0 every source pinned or verified; 1 any unpinned or unverified source,
+#       or any package whose .SRCINFO could not be fetched (an unchecked
+#       package is never a pass); 2 usage error.
 
 set -uo pipefail
 
@@ -168,30 +187,104 @@ fetch_pkgbuild() {
     printf '%s\n' "$body"
 }
 
-# Every VCS URL written in a PKGBUILD's source arrays (source=, source_<arch>=,
-# and += forms), one per line. A text scan: quotes are tracked so a `)` or `#`
-# inside a string does not end the array, and a `#` after whitespace outside
-# quotes starts a comment. Variables stay unexpanded — `git+$url#commit=$_c`
-# is still recognisably a VCS source carrying a commit pin.
-pkgbuild_vcs_urls() {
-    awk '
+# The body of every array in a PKGBUILD whose name matches the ERE $1 (the =
+# and += forms alike), as "<name><TAB><body>" lines. A text scan: quotes are
+# tracked so a `)` or `#` inside a string does not end the array, and a `#`
+# after whitespace outside quotes starts a comment. Variables stay unexpanded.
+pkgbuild_arrays() {
+    awk -v names="$1" '
         function scan(s,   i, c) {
             for (i = 1; i <= length(s); i++) {
                 c = substr(s, i, 1)
                 if (q != "") { if (c == q) q = ""; buf = buf c; continue }
                 if (c == "\"" || c == "\047") { q = c; buf = buf c; continue }
                 if (c == "#" && (i == 1 || substr(s, i - 1, 1) ~ /[[:space:]]/)) break
-                if (c == ")") { print buf; buf = ""; inarr = 0; return }
+                if (c == ")") { print name "\t" buf; buf = ""; inarr = 0; return }
                 buf = buf c
             }
             buf = buf " "
         }
+        BEGIN { head = "^[[:space:]]*(" names ")\\+?=\\(" }
         !inarr && /^[[:space:]]*#/ { next }
-        !inarr && match($0, /^[[:space:]]*source(_[A-Za-z0-9_]+)?\+?=\(/) {
+        !inarr && match($0, head) {
+            name = substr($0, RSTART, RLENGTH)
+            gsub(/^[[:space:]]+|\+?=\($/, "", name)
             inarr = 1; q = ""; buf = ""; scan(substr($0, RSTART + RLENGTH)); next
         }
         inarr { scan($0) }
-    ' | grep -oE '(git|hg|svn|bzr|fossil)(\+|://)[^"'\''[:space:])]*'
+    '
+}
+
+# Every VCS URL written in a PKGBUILD's source arrays (source=, source_<arch>=),
+# one per line. `git+$url#commit=$_c` is still recognisably a VCS source
+# carrying a commit pin.
+pkgbuild_vcs_urls() {
+    pkgbuild_arrays 'source(_[A-Za-z0-9_]+)?' | cut -f2- \
+        | grep -oE '(git|hg|svn|bzr|fossil)(\+|://)[^"'\''[:space:])]*'
+}
+
+# The checksum algorithms that count as verification. Not `ck`: cksums is a CRC.
+SUM_ALGOS='md5|sha1|sha224|sha256|sha384|sha512|b2'
+
+# How often each checksum array says SKIP, as "<array-name> <count>" lines:
+# once for the PKGBUILD's text, once for the .SRCINFO, so the two can be
+# compared array by array.
+pkgbuild_skip_counts() {
+    pkgbuild_arrays "($SUM_ALGOS)sums(_[A-Za-z0-9_]+)?" | awk -F'\t' '
+        { gsub("[\"\047]", " ", $2); m = split($2, t, /[[:space:]]+/)
+          for (i = 1; i <= m; i++) if (t[i] == "SKIP") c[$1]++ }
+        END { for (k in c) if (c[k] > 0) print k, c[k] }'
+}
+srcinfo_skip_counts() {
+    awk -v algos="$SUM_ALGOS" '
+        { key = $1; val = substr($0, index($0, " = ") + 3) }
+        key ~ ("^(" algos ")sums(_[A-Za-z0-9_]+)?$") && val == "SKIP" { c[key]++ }
+        END { for (k in c) print k, c[k] }'
+}
+
+# The remote, non-VCS sources of a .SRCINFO that nothing verifies, one spec per
+# line. A source is verified by a real checksum at its own position in a
+# checksum array of its own architecture, or by a detached signature listed
+# beside it (makepkg: <file>.sig|.sign|.asc, also covering <file>.<compression>
+# — kernel.org signs the uncompressed tar).
+srcinfo_unverified() {
+    awk -v algos="$SUM_ALGOS" '
+        function fname(s,   i) {
+            i = index(s, "::"); if (i) return substr(s, 1, i - 1)
+            sub(/.*\//, "", s); return s
+        }
+        function url(s,   i) { i = index(s, "::"); return i ? substr(s, i + 2) : s }
+        { key = $1; val = substr($0, index($0, " = ") + 3) }
+        index($0, " = ") == 0 { next }
+        key ~ /^source(_[A-Za-z0-9_]+)?$/ {
+            a = substr(key, 7); if (!(a in n)) order[++na] = a
+            src[a, ++n[a]] = val; names[fname(val)] = 1; next
+        }
+        key ~ ("^(" algos ")sums(_[A-Za-z0-9_]+)?$") {
+            a = key; sub(/^[a-z0-9]+sums/, "", a)
+            if (val != "SKIP") ok[a, ++c[key]] = 1; else ++c[key]
+        }
+        END {
+            split("gz bz2 xz lrz lzo Z zst", ext, " ")
+            for (j = 1; j <= na; j++) { a = order[j]
+                for (i = 1; i <= n[a]; i++) {
+                    f = fname(src[a, i])
+                    if (f !~ /\.(sig|sign|asc)$/) continue
+                    b = f; sub(/\.[^.]*$/, "", b)
+                    if (b in names) { signed[b] = 1; issig[a, i] = 1 }
+                    for (e in ext) if ((b "." ext[e]) in names) { signed[b "." ext[e]] = 1; issig[a, i] = 1 }
+                }
+            }
+            for (j = 1; j <= na; j++) { a = order[j]
+                for (i = 1; i <= n[a]; i++) {
+                    u = url(src[a, i])
+                    if (u !~ /:\/\//) continue
+                    if (u ~ /^(git|hg|svn|bzr|fossil)(\+|:\/\/)/) continue
+                    if (issig[a, i] || ok[a, i] || signed[fname(src[a, i])]) continue
+                    print src[a, i]
+                }
+            }
+        }'
 }
 
 # Is this package still present in the AUR RPC index?
@@ -350,9 +443,20 @@ for (( qi = 0; qi < ${#queue[@]}; qi++ )); do
         unpinned+=("$url")
     done < <(awk -F' = ' '/^[[:space:]]*source(_[a-z0-9_]+)? *=/ {print $2}' <<<"$srcinfo")
 
+    # The other half of "what am I building": a download nothing verifies.
+    mapfile -t unverified < <(srcinfo_unverified <<<"$srcinfo")
+
     if (( ${#unpinned[@]} > 0 )); then
         echo "[pin-check] REJECT $pkg: ${#unpinned[@]} unpinned VCS source(s):" >&2
         printf '    %s\n' "${unpinned[@]}" >&2
+    fi
+    if (( ${#unverified[@]} > 0 )); then
+        echo "[pin-check] REJECT $pkg: ${#unverified[@]} download(s) that nothing verifies (checksum SKIP, no signature):" >&2
+        printf '    %s\n' "${unverified[@]}" >&2
+        echo "    makepkg will build whatever that URL serves on the day, unchecked." >&2
+        echo "    No allowlist row covers this: a moving download has no revision to record." >&2
+    fi
+    if (( ${#unpinned[@]} > 0 || ${#unverified[@]} > 0 )); then
         reject_hints "$pkg"
         fail=1
         continue
@@ -383,6 +487,31 @@ for (( qi = 0; qi < ${#queue[@]}; qi++ )); do
         printf '    %s\n' "${pb_unpinned[@]:-"(all pinned, but absent from .SRCINFO)"}" >&2
         echo "    A .SRCINFO that hides a source is how a gate like this one is fooled." >&2
         echo "    Read the PKGBUILD before trusting this package:" >&2
+        printf '    %s\n' "$(printf "$AUR_PKGBUILD_URL" "$(urlenc "$base")")" >&2
+        fail=1
+        continue
+    fi
+
+    # The same tripwire for checksums. makepkg obeys the PKGBUILD; a .SRCINFO
+    # that shows a hash where the PKGBUILD says SKIP is showing a check that
+    # will never run. An array may say SKIP in the PKGBUILD only as often as
+    # the .SRCINFO admits it does.
+    declare -A si_skips=()
+    while read -r name count; do
+        [[ -n "$name" ]] && si_skips[$name]=$count
+    done < <(srcinfo_skip_counts <<<"$srcinfo")
+    hidden=()
+    while read -r name count; do
+        [[ -n "$name" ]] || continue
+        (( count > ${si_skips[$name]:-0} )) \
+            && hidden+=("$name: SKIP x$count in the PKGBUILD, x${si_skips[$name]:-0} in .SRCINFO")
+    done < <(pkgbuild_skip_counts <<<"$pkgbuild")
+    unset si_skips
+    if (( ${#hidden[@]} > 0 )); then
+        echo "[pin-check] REJECT $pkg: the PKGBUILD does not match its .SRCINFO." >&2
+        echo "    Its checksum arrays skip verification the .SRCINFO claims is done:" >&2
+        printf '    %s\n' "${hidden[@]}" >&2
+        echo "    makepkg obeys the PKGBUILD. Read it before trusting this package:" >&2
         printf '    %s\n' "$(printf "$AUR_PKGBUILD_URL" "$(urlenc "$base")")" >&2
         fail=1
     fi
