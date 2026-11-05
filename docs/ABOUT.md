@@ -88,8 +88,8 @@ private `file://` repositories built with the real `repo-add`, real
 scenarios and asserts on installed versions afterwards. Dependency resolution,
 ABI-break detection and transaction ordering are done by pacman, not by a stub.
 The `aur-rebuild-check` cases compile real shared objects with a real
-unresolvable `DT_NEEDED` — and assert that the scan reads them without ever
-handing one to `ldd`.
+unresolvable `DT_NEEDED`, and watch the dynamic loader's own debug log to prove
+the scan never loads one.
 
 The fixture suite proves the allowlist's trust-on-first-use property by
 creating a real git repository, vetting a tag, **moving that tag**, and

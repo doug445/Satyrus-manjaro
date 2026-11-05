@@ -1,6 +1,6 @@
 # Contributing
 
-**Satyrus-manjaro 1.8.0**
+**Satyrus-manjaro 2.0.0**
 
 This project gates what gets installed on your machine. Every added code path is
 a path that can wave something through, and there is one maintainer to be sure
@@ -55,14 +55,14 @@ Run what CI runs:
 
 ```bash
 shellcheck -S warning $(git ls-files '*.sh') bin/*
-bash tests/pin-fixture-test.sh            # expect 71 passed, 0 failed
-sudo bash tests/loopback-core-test.sh     # expect 66 passed, 0 failed
+bash tests/pin-fixture-test.sh            # expect 153 passed, 0 failed
+sudo bash tests/loopback-core-test.sh     # expect 118 passed, 0 failed
 ```
 
 And, if you are on Manjaro, the suite CI cannot run:
 
 ```bash
-bash tests/manjaro-integration-test.sh    # expect 11 passed, 0 failed
+bash tests/manjaro-integration-test.sh    # expect 12 passed, 0 failed
 ```
 
 Requirements for any patch:
