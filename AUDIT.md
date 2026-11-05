@@ -9,8 +9,8 @@
 | | |
 |---|---|
 | Baseline | v1.8.0, commit `38c6b86`, frozen before the first finding |
-| Findings | **62**: 3 critical, 18 high, 19 medium, 22 low |
-| Fixed in 2.0.0 | 59, and 3 partly: what remains of those is under [What is left](#what-is-left) |
+| Findings | **63**: 3 critical, 18 high, 19 medium, 23 low |
+| Fixed in 2.0.0 | 60, and 3 partly: what remains of those is under [What is left](#what-is-left) |
 | Tests | 271 in CI, up from 137. 105 of them fail against 1.8.0 |
 | On real Manjaro | 15 of 15, including a real `chrootbuild` build |
 | Real AUR packages | 699 compared: 6 true catches, 0 false alarms |
@@ -18,7 +18,7 @@
 
 The audit before this one, for 1.8.0, was done by Claude Fable 5.1, Anthropic's
 most capable generally available model. It verified and fixed the four
-priorities of an external review. This one found 62 defects, several of them in
+priorities of an external review. This one found 63 defects, several of them in
 code 1.8.0 had just added.
 
 ### How it was done
@@ -179,6 +179,7 @@ dependencies. None of these is reachable through the suite.
 | Low | A missing UKI directory printed "ok" |
 | Low | A whitespace-only difference rewrote `pacman.conf` and took a backup |
 | Low | A surviving kernel's UKI was listed under "should not exist" |
+| Low | A missing `cmp` read as "changed": `pacman.conf` was rewritten and backed up for nothing. CI's Arch container has no `diffutils`, which is how it was found |
 
 **`deploy.sh`, `audit-drift.sh` and CI.**
 
