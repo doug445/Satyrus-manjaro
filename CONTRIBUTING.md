@@ -1,6 +1,6 @@
 # Contributing
 
-**Satyrus-manjaro 1.6.0**
+**Satyrus-manjaro 1.7.0**
 
 This project gates what gets installed on your machine. Every added code path is
 a path that can wave something through, and there is one maintainer to be sure
