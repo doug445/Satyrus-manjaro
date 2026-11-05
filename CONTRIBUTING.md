@@ -1,6 +1,6 @@
 # Contributing
 
-**Satyrus-manjaro 1.7.0**
+**Satyrus-manjaro 1.8.0**
 
 This project gates what gets installed on your machine. Every added code path is
 a path that can wave something through, and there is one maintainer to be sure
@@ -16,8 +16,8 @@ a comment on their quality; it is the scope.
 
 ## What counts as a bug
 
-- `aur-pin-check` accepting an unpinned VCS source, or an allowlisted tag that
-  has moved.
+- `aur-pin-check` accepting an unpinned VCS source, a download nothing
+  verifies, or an allowlisted tag that has moved.
 - `safeup` holding a package it should not have, or upgrading one it should
   have held.
 - A hold that happened but was not reported, on screen or in
@@ -55,8 +55,14 @@ Run what CI runs:
 
 ```bash
 shellcheck -S warning $(git ls-files '*.sh') bin/*
-bash tests/pin-fixture-test.sh            # expect 59 passed, 0 failed
-sudo bash tests/loopback-core-test.sh     # expect 61 passed, 0 failed
+bash tests/pin-fixture-test.sh            # expect 71 passed, 0 failed
+sudo bash tests/loopback-core-test.sh     # expect 66 passed, 0 failed
+```
+
+And, if you are on Manjaro, the suite CI cannot run:
+
+```bash
+bash tests/manjaro-integration-test.sh    # expect 11 passed, 0 failed
 ```
 
 Requirements for any patch:

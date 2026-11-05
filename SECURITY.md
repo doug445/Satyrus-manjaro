@@ -1,6 +1,6 @@
 # Security Policy
 
-**Satyrus-manjaro 1.7.0**
+**Satyrus-manjaro 1.8.0**
  
 ## Supported Versions
 
@@ -65,8 +65,10 @@ to install. That is the interesting surface:
   `source=` line that reaches `yay` or `chrootbuild` — in a named package or in
   any AUR dependency the build pulls in — without either a `#commit=<40-hex>`
   fragment or a *currently verifying* allowlist row is a vulnerability, not a
-  parsing quirk. So is a PKGBUILD whose source arrays name an unpinned VCS
-  source its `.SRCINFO` hides, getting through. **A skipped check counted as a pass is the same bug**: a package that
+  parsing quirk. So is a remote download that neither a real checksum nor a
+  detached signature verifies — a tarball under `SKIP` — and so is a PKGBUILD
+  whose source arrays name an unpinned VCS source, or whose checksum arrays
+  say `SKIP`, where its `.SRCINFO` hides it, getting through. **A skipped check counted as a pass is the same bug**: a package that
   could not be fetched, parsed or resolved must be reported as an error and must
   never exit 0.
 * **The allowlist failing to notice a moved tag.** The allowlist's entire value
@@ -103,13 +105,16 @@ to install. That is the interesting surface:
   every AUR package left needing a rebuild, must reach both the terminal and
   `/var/log/safeup.log`. A package held silently is a
   package you will still be running, unpatched, in six months without knowing.
-* **`ldd` on attacker-supplied binaries.** `aur-rebuild-check` runs `ldd` over
-  every file owned by every foreign package. `ldd` is not unconditionally safe
-  on a hostile ELF — on some platforms and for some malformed objects it can
-  result in the binary's own interpreter being executed. Anything that widens
-  what gets passed to `ldd`, or that runs it as a more privileged user than
-  necessary, is worth reporting. `aur-rebuild-check` needs no privileges and
-  should never be run as root.
+* **Loading or running what it was asked to inspect.** `aur-rebuild-check`
+  reads the ELF header and dynamic section of every file owned by every
+  foreign package, with `readelf`, and resolves the `DT_NEEDED` names itself.
+  It does not hand those files to the dynamic loader: up to 1.7.0 it ran `ldd`
+  on each of them, which ldd(1) itself warns against for an untrusted
+  executable. Any path that brings back `ldd`, `ld.so --list`, `dlopen` or
+  plain execution of a package's file is a vulnerability; so is a string out
+  of a hostile ELF — a soname, a RUNPATH — reaching a shell as code or the
+  terminal unsanitised. `aur-rebuild-check` needs no privileges and should
+  never be run as root.
 * **`remove-versioned-kernel` removing the wrong thing.** Its three guards — the
   name must match `linuxNN`, it must not be the running kernel, and it must not
   be the last versioned kernel installed — each prevent an unbootable machine.
@@ -135,7 +140,10 @@ to install. That is the interesting surface:
   must confine every write to its own loop device and temporary directory, and
   must never modify the host's package database, `/etc`, or any real disk.
   `tests/pin-fixture-test.sh` must touch no disk beyond `$TMPDIR` and must make
-  no network request.
+  no network request. `tests/manjaro-integration-test.sh` runs on a real
+  system by design and must leave it exactly as it found it: no package
+  installed, no database refreshed, nothing written outside `$TMPDIR` — with
+  `--build`, nothing but `chrootbuild`'s own chroot.
 
 ## What is out of scope
 
@@ -146,7 +154,7 @@ to install. That is the interesting surface:
   user. That is how the AUR works; this suite gates *which* commit gets built,
   not what building it is permitted to do.
 * **Bugs in the software this drives** — `pacman`, `yay`, `makepkg`,
-  `libalpm`, `git`, `curl`, `ldd`. Report those upstream.
+  `libalpm`, `git`, `curl`, `readelf`. Report those upstream.
 * **Manjaro's release lag itself.** The two-week delay behind Arch is Manjaro's
   design decision. This tooling handles its consequences; the decision is not a
   vulnerability in this tooling.
