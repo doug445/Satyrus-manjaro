@@ -24,6 +24,16 @@ lets an AUR PKGBUILD build something other than what you reviewed.
 > **Already on Manjaro and staying?** Then read on. This is how you keep the
 > AUR from breaking it.
 
+**Why the name "Satyrus-manjaro"?**
+
+In ancient Athens, the great orator Demosthenes suffered from a severe stutter, weak breath, and a debilitating inability to articulate his words. He was laughed out of the assembly until he met Satyrus, a master actor who took him under his wing. Satyrus forced Demosthenes through a brutal regimen of mechanical correction—speaking with pebbles in his mouth and shouting over the crashing surf—until his broken delivery was forged into flawless, peerless articulation.
+
+Manjaro is my Demosthenes.
+
+Manjaro is infamous for its "two-week delay" on syncing upstream Arch packages—a delay ostensibly meant to test for stability, but which rarely changes anything. Instead, it artificially desyncs the core system from the Arch User Repository (AUR). When you try to build an AUR package, it expects upstream Arch dependencies, chokes on Manjaro's artificially aged packages, and breaks the system.
+
+**Satyrus-manjaro** is the mentor that fixes the stutter. It bypasses the artificial delays and dependency fractures, forcing Manjaro to correctly resolve, build, and articulate AUR packages without breaking the system.
+
 It is six short bash scripts, no daemon, no runtime dependency beyond pacman,
 coreutils and fakeroot, and 108 tests, 49 of which run real `pacman`
 transactions on a loop device.
@@ -131,7 +141,7 @@ From its own forum, mailing lists and issue tracker:
   for the AUR, as above, is that it is your own responsibility.
 
 [manjarno](https://manjarno.pages.dev/) catalogues more of the same, with
-sources and a total time elapsed since last self-inflicted mismanagement count-up clock.
+sources.
 
 ### Who answers for it
 
