@@ -3,8 +3,8 @@
 #              an isolated Manjaro chroot whenever that is the right tool.
 #
 # Blocks installs whose PKGBUILDs contain VCS sources without an immutable
-# revision pin (see aur-pin-check for the per-VCS rule). Non-VCS sources are
-# unaffected (their integrity is already covered by PKGBUILD sha256sums).
+# revision pin (see aur-pin-check for the per-VCS rule), or a remote download
+# that neither a real checksum nor a signature verifies (`SKIP`).
 # Every AUR dependency the build would pull in is checked too, on every path:
 # yay builds those as readily as the package you named.
 #
