@@ -5,9 +5,18 @@
 # Pinning policy — every VCS source in the PKGBUILD must carry the fragment that
 # names one immutable revision for that VCS:
 #
-#   git, fossil   #commit=<40-hex>   (64-hex for SHA-256 repositories)
+#   git           #commit=<40-hex>
+#   fossil        #commit=<40-hex or 64-hex>
 #   hg            #revision=<40-hex> (the changeset hash)
 #   svn, bzr      #revision=<N>
+#
+# The fragment is taken the way makepkg takes it -- from the first `#` of the
+# whole entry, filename prefix included -- and has to be that pin and nothing
+# else. makepkg reads the kind up to the first `=` and the value after the last,
+# so `#commit=<sha>?=main` is the branch and `#tag=v1?x#commit=<sha>` is the tag;
+# looking for `#commit=` somewhere in the string accepted both. 64-hex is not a
+# git pin: on a SHA-1 repository, git resolves such a string as a ref name, and
+# a tag of that name can move.
 #
 # Tag fragments (`#tag=...`) and branch fragments are REJECTED because upstream
 # can re-point them. A `?signed` query after the fragment is makepkg asking for
@@ -39,24 +48,34 @@
 #
 # Reads .SRCINFO (post-eval, no bash execution) from AUR's cgit. Safe to
 # run on untrusted package names: only does an HTTPS fetch + text parse.
-# cgit serves .SRCINFO per pkgBASE; a split package's own name has no branch
-# there, so it is resolved to its pkgbase through the AUR RPC first.
+#
+# Every name goes through the AUR's RPC index first. That is what says the
+# package exists and which pkgbase it belongs to; cgit cannot, because it keeps
+# the branches of deleted packages forever. A .SRCINFO fetched straight by name
+# could belong to a repository the AUR dropped years ago, which is then not what
+# `yay -S` builds: it may build a provider of that name, or the live split
+# package the old branch is shadowing. Not indexed is an ERROR, and so is an
+# index that could not be asked: an unchecked package is never a pass. And what
+# comes back has to be what was asked for. A captive portal or an anti-bot page
+# answers 200 with HTML, in which no unpinned source would ever be found.
 #
 # .SRCINFO is written by the maintainer, and the AUR never checks it against
 # the PKGBUILD. So the PKGBUILD is read too — as text, never executed — and a
-# package is REJECTED when its source arrays name more unpinned VCS sources
-# than its .SRCINFO admits to, or its checksum arrays say SKIP more often than
-# the .SRCINFO does. That catches a .SRCINFO that hides a source, or shows a
-# hash makepkg will never check. It is a tripwire, not a proof: a PKGBUILD is code, and one that builds its URL
-# at run time, or does its damage in build(), passes any static check. The
-# defence against a hostile maintainer is reading the PKGBUILD.
+# package is REJECTED when the two disagree: its source arrays name more
+# unpinned VCS sources than its .SRCINFO admits to, or any source URL, checksum
+# or signing key differs (see pkgbuild_elements). That catches a .SRCINFO that
+# hides a source, or shows a hash makepkg will never check, and one that has
+# simply been left behind. It is a tripwire, not a proof: a PKGBUILD is code,
+# and one that builds its URL at run time, or does its damage in build(), passes
+# any static check. The defence against a hostile maintainer is reading the
+# PKGBUILD.
 #
 # Allowlist (escape hatch for tag-pinned upstreams):
 #   /etc/aur-pin-check/allowlist.conf — one rule per line:
-#     <pkg>  <vcs-source-spec>  <expected-40-hex-sha>
-#   When a tag-pinned source matches an allowlist rule, the upstream tag
-#   is resolved live with `git ls-remote` and accepted only if the SHA
-#   still matches the recorded value. If upstream silently moves the tag,
+#     <pkgbase>  <vcs-source-spec>  <expected-40-hex-sha>
+#   When a plain `git+...#tag=<name>` source matches an allowlist rule, the
+#   upstream tag is resolved live with `git ls-remote` and accepted only if the
+#   SHA still matches the recorded value. If upstream silently moves the tag,
 #   the SHA changes and the package is rejected on the next run — TOFU
 #   semantics, no blanket trust.
 #
@@ -66,6 +85,11 @@
 #                                    # in: depends, makedepends, checkdepends
 #   aur-pin-check --from-aur pkg ... # check even a name a binary repo carries:
 #                                    # for callers about to build it from the AUR
+#   aur-pin-check --pkgbase base ... # the names are pkgbases already, and the
+#                                    # endpoints point at their clones: aurinstall
+#                                    # checking what it is about to build. A
+#                                    # pkgbase is not an index entry, so the RPC
+#                                    # is not asked
 #
 # By default a name a binary repository carries is skipped: `yay -S` installs
 # the repo copy, so the AUR's is not what lands. A caller that builds from the
@@ -74,14 +98,12 @@
 # binary repo satisfies it — exactly the ones yay would build — and always
 # with --from-aur semantics: a repo copy that is too old is why it is built.
 #
-# On REJECT, prints triage hints before you reach for the override: whether
-# the package is still in the AUR index at all (cgit serves deleted packages'
-# repos forever), and whether it is an installed orphan that should simply be
-# removed rather than allowlisted.
+# On REJECT, says whether the package is an installed orphan that should simply
+# be removed rather than allowlisted.
 #
 # Exit: 0 every source pinned or verified; 1 any unpinned or unverified source,
-#       or any package whose .SRCINFO could not be fetched (an unchecked
-#       package is never a pass); 2 usage error.
+#       or any package that could not be looked up, fetched or read (an
+#       unchecked package is never a pass); 2 usage error.
 
 set -uo pipefail
 
@@ -97,17 +119,36 @@ AUR_PKGBUILD_URL="${AUR_PKGBUILD_URL:-https://aur.archlinux.org/cgit/aur.git/pla
 
 walk_deps=0
 from_aur=0
+name_is_base=0
 while (( $# > 0 )); do
     case "$1" in
         --deps)     walk_deps=1; shift ;;
         --from-aur) from_aur=1; shift ;;
+        --pkgbase)  name_is_base=1; shift ;;
         --)         shift; break ;;
         -*)         echo "aur-pin-check: unknown option: $1" >&2; exit 2 ;;
         *)          break ;;
     esac
 done
 
-(( $# > 0 )) || { echo "usage: $0 [--deps] [--from-aur] <pkg>..." >&2; exit 2; }
+(( $# > 0 )) || { echo "usage: $0 [--deps] [--from-aur] [--pkgbase] <pkg>..." >&2; exit 2; }
+
+# Every verdict below rests on these, and a process substitution hides a tool
+# that dies: with awk broken by a half-finished upgrade, no source would be read
+# and no source would be refused. So they are made to prove they work first.
+if [[ "$(printf 'x y\n' | awk '{ print $2 }' | grep y | sed 's/y/z/' | cut -c1 | sort)" != z ]]; then
+    echo "[pin-check] ERROR: awk, grep, sed, cut or sort is not working — nothing can be checked" >&2
+    exit 1
+fi
+
+# What came off the network, made safe to print: a hostile .SRCINFO must not get
+# to write escape sequences to the terminal that is reading the verdict.
+clean() { LC_ALL=C tr -d '\000-\010\013-\037\177'; }
+
+# makepkg's rule for a package name, with the upper case the AUR's oldest names
+# still carry. A dependency string comes from the network; anything else cannot
+# be a package, and is not worth a request.
+valid_name() { [[ "$1" =~ ^[A-Za-z0-9@_+][A-Za-z0-9@._+-]*$ ]]; }
 
 # Percent-encode a package name for a URL. Names may carry '+' and '@'; sent
 # raw, cgit and the RPC read '+' as a space, and `aewm++` was a 404 forever.
@@ -124,30 +165,39 @@ urlenc() {
     printf '%s' "$out"
 }
 
-# Look up an allowlist rule. Echoes the expected SHA on stdout if a row
-# matches (pkg + exact source spec). No output if no match.
+# Look up an allowlist rule. Echoes the expected SHA on stdout if a row matches
+# (pkgbase + exact source spec). No output if no match. ENVIRON and not -v: awk
+# decodes backslashes in -v, so `#tag=v1\.0` would match a row for `#tag=v1.0`.
 allowlist_sha() {
-    local pkg="$1" spec="$2"
     [[ -r "$ALLOWLIST" ]] || return 1
-    awk -v p="$pkg" -v s="$spec" '
+    ROW_PKG="$1" ROW_SPEC="$2" awk '
         /^[[:space:]]*#/ || NF < 3 { next }
-        $1 == p && $2 == s { print $3; exit }
+        $1 == ENVIRON["ROW_PKG"] && $2 == ENVIRON["ROW_SPEC"] { print $3; exit }
     ' "$ALLOWLIST"
 }
 
-# Resolve a `git+<url>#tag=<name>[?query]` source to its current upstream SHA.
-# Returns empty string on any failure.
+# Can this entry be allowlisted at all? Only a plain tag: makepkg takes the value
+# after the LAST `=`, so in `#tag=decoy?=evil` the name the gate would resolve is
+# not the one that gets built, and a `#` in the filename prefix moves the whole
+# fragment somewhere the row never looked.
+allowlistable() {
+    local spec="$1"
+    [[ "$(source_proto "$spec")" == git ]] || return 1
+    [[ "${spec#*#}" =~ ^tag=[^=?#[:space:]]+$ ]]
+}
+
+# Resolve a `git+<url>#tag=<name>` source to its current upstream SHA. Returns
+# empty on any failure. `git ls-remote` matches a pattern against the TAIL of a
+# ref name, so it also answers for a decoy called `0/refs/tags/<name>`: only the
+# line whose ref is exactly this tag counts, wherever in the output it comes.
 resolve_git_tag() {
     local spec="$1" url tag
-    # Strip the git+ prefix and the #tag=... fragment to get the bare URL.
     url="${spec#git+}"
     tag="${url##*#tag=}"
-    tag="${tag%%\?*}"
     url="${url%%#*}"
-    [[ -z "$tag" || "$tag" == "$spec" ]] && return 1
-    # ls-remote with an exact ref path; awk to extract the SHA.
+    [[ -n "$tag" ]] || return 1
     git ls-remote --tags --refs "$url" "refs/tags/$tag" 2>/dev/null \
-        | awk 'NR==1 {print $1}'
+        | WANT_REF="refs/tags/$tag" awk '$2 == ENVIRON["WANT_REF"] { print $1 }'
 }
 
 # Fetch the AUR RPC info record for a name. Echoes the body; fails on any
@@ -157,26 +207,29 @@ rpc_info() {
     curl -fsSL --max-time 10 "$rpc" 2>/dev/null
 }
 
-# The pkgbase a package name belongs to, per the RPC. Empty if unknown.
+# The pkgbase a package name belongs to, per the RPC: 0 and the pkgbase, 1 not
+# in the index, 2 could not tell. An RPC error reply carries resultcount:0 as
+# well -- a rate limit is not a deleted package -- so its type is looked at first.
 aur_pkgbase() {
-    local body
-    body=$(rpc_info "$1") || return 1
-    grep -oE '"PackageBase":"[^"]+"' <<<"$body" | head -1 | cut -d'"' -f4
+    local body base
+    body=$(rpc_info "$1") || return 2
+    case "$body" in
+        *'"type":"error"'*)  return 2 ;;
+        *'"resultcount":0'*) return 1 ;;
+        *'"resultcount":'*)  ;;
+        *)                   return 2 ;;
+    esac
+    base=$(grep -oE '"PackageBase":"[^"]+"' <<<"$body" | cut -d'"' -f4 | sed -n 1p)
+    valid_name "$base" || return 2
+    printf '%s\n' "$base"
 }
 
-# Fetch .SRCINFO for a package name. cgit keys on pkgbase, so a split package's
-# own name 404s; on that failure the RPC is asked for the pkgbase and the fetch
-# is retried once with it. The RPC round-trip is on the failure path only.
+# Fetch the .SRCINFO of a pkgbase.
 fetch_srcinfo() {
-    local pkg="$1" url body base
-    printf -v url "$AUR_SRCINFO_URL" "$(urlenc "$pkg")"
-    if body=$(curl -fsSL --max-time 15 "$url" 2>/dev/null) && [[ -n "$body" ]]; then
-        printf '%s\n' "$body"; return 0
-    fi
-    base=$(aur_pkgbase "$pkg") || return 1
-    [[ -n "$base" && "$base" != "$pkg" ]] || return 1
-    printf -v url "$AUR_SRCINFO_URL" "$(urlenc "$base")"
-    curl -fsSL --max-time 15 "$url" 2>/dev/null
+    local url body
+    printf -v url "$AUR_SRCINFO_URL" "$(urlenc "$1")"
+    body=$(curl -fsSL --max-time 15 "$url" 2>/dev/null) && [[ -n "$body" ]] || return 1
+    printf '%s\n' "$body"
 }
 
 # The PKGBUILD of a pkgbase, as text. Never sourced, never executed.
@@ -187,171 +240,406 @@ fetch_pkgbuild() {
     printf '%s\n' "$body"
 }
 
-# The body of every array in a PKGBUILD whose name matches the ERE $1 (the =
-# and += forms alike), as "<name><TAB><body>" lines. A text scan: quotes are
-# tracked so a `)` or `#` inside a string does not end the array, and a `#`
-# after whitespace outside quotes starts a comment. Variables stay unexpanded.
-pkgbuild_arrays() {
-    awk -v names="$1" '
-        function scan(s,   i, c) {
-            for (i = 1; i <= length(s); i++) {
-                c = substr(s, i, 1)
-                if (q != "") { if (c == q) q = ""; buf = buf c; continue }
-                if (c == "\"" || c == "\047") { q = c; buf = buf c; continue }
-                if (c == "#" && (i == 1 || substr(s, i - 1, 1) ~ /[[:space:]]/)) break
-                if (c == ")") { print name "\t" buf; buf = ""; inarr = 0; return }
-                buf = buf c
-            }
-            buf = buf " "
-        }
-        BEGIN { head = "^[[:space:]]*(" names ")\\+?=\\(" }
-        !inarr && /^[[:space:]]*#/ { next }
-        !inarr && match($0, head) {
-            name = substr($0, RSTART, RLENGTH)
-            gsub(/^[[:space:]]+|\+?=\($/, "", name)
-            inarr = 1; q = ""; buf = ""; scan(substr($0, RSTART + RLENGTH)); next
-        }
-        inarr { scan($0) }
-    '
-}
-
-# Every VCS URL written in a PKGBUILD's source arrays (source=, source_<arch>=),
-# one per line. `git+$url#commit=$_c` is still recognisably a VCS source
-# carrying a commit pin.
-pkgbuild_vcs_urls() {
-    pkgbuild_arrays 'source(_[A-Za-z0-9_]+)?' | cut -f2- \
-        | grep -oE '(git|hg|svn|bzr|fossil)(\+|://)[^"'\''[:space:])]*'
-}
-
 # The checksum algorithms that count as verification. Not `ck`: cksums is a CRC.
 SUM_ALGOS='md5|sha1|sha224|sha256|sha384|sha512|b2'
 
-# How often each checksum array says SKIP, as "<array-name> <count>" lines:
-# once for the PKGBUILD's text, once for the .SRCINFO, so the two can be
-# compared array by array.
-pkgbuild_skip_counts() {
-    pkgbuild_arrays "($SUM_ALGOS)sums(_[A-Za-z0-9_]+)?" | awk -F'\t' '
-        { gsub("[\"\047]", " ", $2); m = split($2, t, /[[:space:]]+/)
-          for (i = 1; i <= m; i++) if (t[i] == "SKIP") c[$1]++ }
-        END { for (k in c) if (c[k] > 0) print k, c[k] }'
+# The arrays compared between a PKGBUILD and its .SRCINFO. cksums is in this
+# list although it verifies nothing: a difference in it is still a difference.
+COMPARED_ARRAYS="source(_[A-Za-z0-9_]+)?|(ck|$SUM_ALGOS)sums(_[A-Za-z0-9_]+)?|validpgpkeys"
+
+# A PKGBUILD's source, checksum and signing-key arrays, read as text. Nothing is
+# sourced or evaluated: quotes, comments and line continuations are tokenised
+# here, and every expansion is either looked up or given up on.
+#
+# A simple top-level assignment (`_commit=abc`, `pkgver=1.2`, `url="https://x"`)
+# is substituted, since most real sources carry $pkgver. Anything else that
+# expands -- a command substitution, ${pkgver%.*}, a variable assigned twice or
+# inside a function or an `if` -- becomes \001, a wildcard that matches any text.
+# So an array is only ever judged on what can be known without running it, and
+# legitimate shell cannot produce a false alarm.
+#
+# Output, one line per record, tab-separated:
+#   S <array> set|add|cond   a statement: `x=(` | `x+=(` | either, conditionally
+#   E <array> <element>      one element, in order
+#   A <array> <n> <element>  `x[n]=element`, unconditionally
+#   D <array>                the element count cannot be known statically
+#   X <array>                it could not be read: an array never closed
+# A statement counts as conditional when indented or inside if/case/for/while:
+# only one branch of it reached the .SRCINFO. Heredoc bodies are text, not code,
+# and are skipped. LC_ALL=C makes substr() O(1).
+pkgbuild_elements() {
+    LC_ALL=C awk -v names="$COMPARED_ARRAYS" '
+        BEGIN {
+            U = "\001"
+            head = "^[[:space:]]*(" names ")\\+?=\\("
+            # The same statement after something on its line: `if x; then a=(`
+            before = "([;&|({]|then[[:space:]]|do[[:space:]]|else[[:space:]]|(declare|typeset)[[:space:]]+(-[[:alpha:]]+[[:space:]]+)*)[[:space:]]*"
+            mid = before "(" names ")\\+?=\\("
+            # One element by subscript. Real packages do this: `sha512sums[4]=SKIP`
+            sub1 = "(^[[:space:]]*|" before ")(" names ")\\[[^]]*\\]="
+        }
+
+        function value(nm, depth) {
+            if (!(nm in RAW) || (nm in BAD) || depth >= 8) return U
+            return word(RAW[nm], 1, depth + 1)
+        }
+
+        # One shell word of s from i. WORD_END is left just past it, WORD_DYN
+        # set when it may expand to any number of words.
+        function word(s, i, depth,    n, c, nx, cl, out, q, j, d, inner, quoted, dyn) {
+            n = length(s); out = ""; q = ""; quoted = 0; dyn = 0
+            for (; i <= n; i++) {
+                c = substr(s, i, 1)
+                if (q == "\047") { if (c == "\047") q = ""; else out = out c; continue }
+                if (c == "\\") {
+                    nx = substr(s, ++i, 1)
+                    if (nx == "\n") continue
+                    if (q != "" && index("$`\"\\", nx) == 0) out = out c
+                    out = out nx; continue
+                }
+                if (q == "\"") { if (c == "\"") { q = ""; continue } }
+                else {
+                    if (c == "\047" || c == "\"") { q = c; quoted = 1; continue }
+                    if (c ~ /[[:space:]);&|]/) break
+                    if (c == "{") {                # brace expansion?
+                        j = index(substr(s, i), "}")
+                        inner = j ? substr(s, i, j) : ""
+                        if (inner ~ /,|\.\./ && inner !~ /[[:space:]]/) {
+                            dyn = 1; out = out U; i += j - 1; continue
+                        }
+                    }
+                }
+                if (c == "`") {
+                    j = index(substr(s, i + 1), "`"); i = j ? i + j : n
+                    out = out U; continue
+                }
+                if (c != "$") { out = out c; continue }
+                nx = substr(s, i + 1, 1)
+                if (nx == "(" || nx == "{") {
+                    cl = (nx == "(") ? ")" : "}"
+                    d = 0
+                    for (j = i + 1; j <= n; j++) {
+                        c = substr(s, j, 1)
+                        if (c == nx) d++
+                        else if (c == cl && --d == 0) break
+                    }
+                    inner = substr(s, i + 2, j - i - 2)
+                    i = j
+                    if (nx == "{" && inner ~ /^[A-Za-z_][A-Za-z0-9_]*$/) {
+                        out = out value(inner, depth); continue
+                    }
+                    if (inner ~ /\[[@*]\]/) dyn = 1
+                    out = out U; continue
+                }
+                if (match(substr(s, i + 1, 128), /^[A-Za-z_][A-Za-z0-9_]*/)) {
+                    j = RLENGTH
+                    out = out value(substr(s, i + 1, j), depth); i += j; continue
+                }
+                if (nx == "@" || nx == "*") { dyn = 1; out = out U; i++; continue }
+                if (nx != "" && index("0123456789#?$!-", nx)) { out = out U; i++; continue }
+                out = out c
+            }
+            if (out == U && !quoted) dyn = 1       # a bare $x can split into words
+            WORD_END = i; WORD_DYN = dyn; WORD_QUOTED = quoted
+            return out
+        }
+
+        # Emit the elements of the array whose body starts at i; returns the
+        # offset of its closing parenthesis.
+        function array(name, i, kind,    n, c, j, w) {
+            printf "S\t%s\t%s\n", name, kind
+            n = length(T)
+            while (i <= n) {
+                c = substr(T, i, 1)
+                if (c ~ /[[:space:]]/) { i++; continue }
+                if (c == ")") return i
+                if (c == "#") {
+                    j = index(substr(T, i), "\n"); i += j ? j : n; continue
+                }
+                w = word(T, i, 0)
+                if (WORD_END <= i) { i++; continue }
+                i = WORD_END
+                if (w == "" && !WORD_QUOTED) continue     # a line continuation
+                if (WORD_DYN) printf "D\t%s\n", name
+                gsub(/[\t\n]/, " ", w)
+                printf "E\t%s\t%s\n", name, w
+            }
+            printf "X\t%s\n", name                      # no closing parenthesis
+            return n
+        }
+
+        { sub(/\r$/, ""); L[NR] = $0; T = T $0 "\n" }
+
+        END {
+            for (k = 1; k <= NR; k++) {
+                line = L[k]
+                if (!match(line, /^[[:space:]]*[A-Za-z_][A-Za-z0-9_]*\+?=/)) continue
+                lhs = substr(line, 1, RLENGTH); rhs = substr(line, RLENGTH + 1)
+                nm = lhs; gsub(/[[:space:]+=]/, "", nm)
+                if ((nm in RAW) || lhs ~ /^[[:space:]]/ || lhs ~ /\+=$/ || rhs ~ /^\(/) BAD[nm] = 1
+                RAW[nm] = rhs
+                word(rhs, 1, 8)
+                if (substr(rhs, WORD_END) !~ /^[[:space:]]*([#;].*)?$/) BAD[nm] = 1
+            }
+            off = 1; upto = 0; cond = 0; doc = ""
+            for (k = 1; k <= NR; k++) {
+                line = L[k]; start = off; off += length(line) + 1
+                if (start <= upto) continue
+                if (doc != "") {
+                    t = line; sub(/^\t+/, "", t)
+                    if (t == doc) doc = ""
+                    continue
+                }
+                if (line !~ /^[[:space:]]*#/ \
+                    && match(line, /<<-?[[:space:]]*["\047]?[A-Za-z_][A-Za-z0-9_]*/) \
+                    && substr(line, RSTART - 1, 1) != "<") {
+                    doc = substr(line, RSTART, RLENGTH); sub(/^<<-?[[:space:]]*["\047]?/, "", doc)
+                }
+                if (line ~ /^[[:space:]]*(if|case|for|while|until)[[:space:](]/) cond++
+                if (match(line, head)) {
+                    name = substr(line, 1, RLENGTH)
+                    add = (name ~ /\+=\($/)
+                    kind = (cond > 0 || line ~ /^[[:space:]]/) ? "cond" : (add ? "add" : "set")
+                    gsub(/[[:space:]+=(]/, "", name)
+                    upto = array(name, start + RLENGTH, kind)
+                    continue
+                }
+                if (line !~ /^[[:space:]]*#/ && match(line, sub1)) {
+                    t = substr(line, RSTART, RLENGTH); at = RSTART + RLENGTH
+                    plain = (cond == 0 && line !~ /^[[:space:]]/)
+                    sub(/\]=$/, "", t)
+                    idx = t; sub(/^.*\[/, "", idx)
+                    name = t; sub(/\[[^[]*$/, "", name); sub(/^.*[^A-Za-z0-9_]/, "", name)
+                    w = word(line, at, 0)
+                    gsub(/[\t\n]/, " ", w)
+                    if (plain && idx ~ /^[0-9]+$/) printf "A\t%s\t%s\t%s\n", name, idx, w
+                    else printf "D\t%s\n", name
+                    if (cond > 0 && line ~ /(^|[[:space:];])(fi|esac|done)[[:space:]]*(#.*)?$/) cond--
+                    continue
+                }
+                if (line !~ /^[[:space:]]*#/ && match(line, mid)) {
+                    name = substr(line, RSTART, RLENGTH); at = start + RSTART + RLENGTH - 1
+                    sub(/\+?=\($/, "", name); sub(/^.*[^A-Za-z0-9_]/, "", name)
+                    upto = array(name, at, "cond")
+                    if (cond > 0 && line ~ /(^|[[:space:];])(fi|esac|done)[[:space:]]*(#.*)?$/) cond--
+                    continue
+                }
+                if (cond > 0 && line ~ /(^|[[:space:];])(fi|esac|done)[[:space:]]*(#.*)?$/) cond--
+            }
+        }'
 }
-srcinfo_skip_counts() {
-    awk -v algos="$SUM_ALGOS" '
-        { key = $1; val = substr($0, index($0, " = ") + 3) }
-        key ~ ("^(" algos ")sums(_[A-Za-z0-9_]+)?$") && val == "SKIP" { c[key]++ }
-        END { for (k in c) print k, c[k] }'
+
+# Where a PKGBUILD and its .SRCINFO disagree, one description per line: nothing
+# on stdout means they agree. $1 = the .SRCINFO, $2 = pkgbuild_elements output.
+#
+# Arrays with one unconditional shape are compared element by element, so a
+# different URL, a different hash or a hidden entry all show. Where branches or
+# run-time word counts make that impossible, every entry the .SRCINFO claims
+# must still appear in the PKGBUILD, and no single statement may say SKIP more
+# often than the .SRCINFO does. Another architecture's array is skipped: makepkg
+# leaves those out of a .SRCINFO that does not list the architecture.
+pkgbuild_mismatches() {
+    LC_ALL=C awk -v names="$COMPARED_ARRAYS" '
+        BEGIN { U = "\001"; full = "^(" names ")$" }
+
+        # Does element p, which may hold \001 wildcards, fit the text s? Chunks
+        # are compared with index(), so nothing from the PKGBUILD is ever used
+        # as a regular expression.
+        function fits(p, s,    n, t, i, pos, k) {
+            if (index(p, U) == 0) return p == s
+            n = split(p, t, U)
+            if (substr(s, 1, length(t[1])) != t[1]) return 0
+            pos = length(t[1]) + 1
+            for (i = 2; i < n; i++) {
+                if (t[i] == "") continue
+                k = index(substr(s, pos), t[i])
+                if (!k) return 0
+                pos += k - 1 + length(t[i])
+            }
+            if (length(s) - pos + 1 < length(t[n])) return 0
+            return t[n] == "" || substr(s, length(s) - length(t[n]) + 1) == t[n]
+        }
+        function show(x) { gsub(U, "*", x); return x }
+
+        FNR == NR {
+            line = $0; sub(/^[[:space:]]+/, "", line); sub(/[[:space:]]+$/, "", line)
+            p = index(line, " = "); if (!p) next
+            key = substr(line, 1, p - 1); val = substr(line, p + 3)
+            if (key == "arch") ARCH[val] = 1
+            if (key ~ full) { S[key, ++Sn[key]] = val; seen[key] = 1 }
+            if (key ~ /sums/ && val == "SKIP") Sskip[key]++
+            next
+        }
+        $0 == "" { next }
+        {
+            split($0, f, "\t"); key = f[2]; seen[key] = 1
+            if (f[1] == "S") {
+                stmt[key] = 1
+                if (f[3] == "set") Pn[key] = 0
+                if (f[3] == "cond") loose[key] = 1
+                if (f[3] != "add") skips = 0
+            } else if (f[1] == "D") {
+                loose[key] = 1
+            } else if (f[1] == "X") {
+                open[key] = 1
+            } else if (f[1] == "A") {
+                i = f[3] + 1
+                P[key, i] = substr($0, length(f[1]) + length(key) + length(f[3]) + 4)
+                if (i > Pn[key] + 0) Pn[key] = i
+            } else if (f[1] == "E") {
+                val = substr($0, length(f[1]) + length(key) + 3)
+                P[key, ++Pn[key]] = val
+                if (val == "SKIP" && ++skips > Pskip[key] + 0) Pskip[key] = skips
+            }
+        }
+        END {
+            for (key in seen) {
+                a = key; sub(/^(source|[a-z0-9]+sums|validpgpkeys)_?/, "", a)
+                if (a != "" && !(a in ARCH) && !Sn[key]) continue
+                if (key in open) {
+                    printf "%s: the array is never closed\n", key
+                    continue
+                }
+                if (!(key in stmt)) {
+                    printf "%s: in the .SRCINFO, but no such array in the PKGBUILD\n", key
+                    continue
+                }
+                if (key in loose) {
+                    if (Pskip[key] + 0 > Sskip[key] + 0) {
+                        printf "%s: SKIP x%d in the PKGBUILD, x%d in the .SRCINFO\n", key, Pskip[key], Sskip[key] + 0
+                        continue
+                    }
+                    for (i = 1; i <= Sn[key]; i++) {
+                        hit = 0
+                        for (j = 1; j <= Pn[key] && !hit; j++) hit = fits(P[key, j], S[key, i])
+                        if (!hit) printf "%s[%d]: the .SRCINFO says %s, and the PKGBUILD has nothing like it\n", key, i, S[key, i]
+                    }
+                } else if (Pn[key] + 0 != Sn[key] + 0) {
+                    printf "%s: %d entries in the PKGBUILD, %d in the .SRCINFO\n", key, Pn[key] + 0, Sn[key] + 0
+                } else {
+                    for (i = 1; i <= Sn[key]; i++) if (!fits(P[key, i], S[key, i]))
+                        printf "%s[%d]: PKGBUILD %s, .SRCINFO %s\n", key, i, show(P[key, i]), S[key, i]
+                }
+            }
+        }' <(printf '%s\n' "$1") <(printf '%s\n' "$2")
 }
 
 # The remote, non-VCS sources of a .SRCINFO that nothing verifies, one spec per
 # line. A source is verified by a real checksum at its own position in a
 # checksum array of its own architecture, or by a detached signature listed
 # beside it (makepkg: <file>.sig|.sign|.asc, also covering <file>.<compression>
-# — kernel.org signs the uncompressed tar).
+# -- kernel.org signs the uncompressed tar). "Beside it" means fetched with it: a
+# signature in source_aarch64 is not on disk when x86_64 builds, so it covers
+# files in its own array, and only one in the plain array covers everybody's.
 srcinfo_unverified() {
-    awk -v algos="$SUM_ALGOS" '
+    awk -v algos="$SUM_ALGOS" -v vcs='^(git|hg|svn|bzr|fossil)$' '
         function fname(s,   i) {
             i = index(s, "::"); if (i) return substr(s, 1, i - 1)
             sub(/.*\//, "", s); return s
         }
-        function url(s,   i) { i = index(s, "::"); return i ? substr(s, i + 2) : s }
-        { key = $1; val = substr($0, index($0, " = ") + 3) }
+        # get_protocol, as makepkg has it.
+        function proto(s,   u, i) {
+            u = s; i = index(u, "::"); if (i) u = substr(u, i + 2)
+            if (s ~ /:\/\//) { sub(/:\/\/.*/, "", u); sub(/\+.*/, "", u); return u }
+            if (s ~ /lp:/)   { sub(/\+lp:.*/, "", u); return u }
+            return "local"
+        }
+        function cover(a, i, file,    j, t, hit) {
+            hit = 0
+            for (j = 1; j <= na; j++) {
+                t = order[j]
+                if ((t == a || a == "") && ((t, file) in names)) {
+                    signed[t, file] = 1; issig[a, i] = 1; hit = 1
+                }
+            }
+            return hit
+        }
+        { sub(/[[:space:]]+$/, "") }
         index($0, " = ") == 0 { next }
+        { key = $1; val = substr($0, index($0, " = ") + 3) }
         key ~ /^source(_[A-Za-z0-9_]+)?$/ {
             a = substr(key, 7); if (!(a in n)) order[++na] = a
-            src[a, ++n[a]] = val; names[fname(val)] = 1; next
+            src[a, ++n[a]] = val; names[a, fname(val)] = 1; next
         }
         key ~ ("^(" algos ")sums(_[A-Za-z0-9_]+)?$") {
             a = key; sub(/^[a-z0-9]+sums/, "", a)
             if (val != "SKIP") ok[a, ++c[key]] = 1; else ++c[key]
         }
         END {
-            split("gz bz2 xz lrz lzo Z zst", ext, " ")
+            ne = split("gz bz2 xz lrz lzo Z zst", ext, " ")
             for (j = 1; j <= na; j++) { a = order[j]
                 for (i = 1; i <= n[a]; i++) {
                     f = fname(src[a, i])
                     if (f !~ /\.(sig|sign|asc)$/) continue
+                    # A VCS entry named like a signature is handed to the VCS
+                    # handler, and verifies no file.
+                    if (proto(src[a, i]) ~ vcs) continue
                     b = f; sub(/\.[^.]*$/, "", b)
-                    if (b in names) { signed[b] = 1; issig[a, i] = 1 }
-                    for (e in ext) if ((b "." ext[e]) in names) { signed[b "." ext[e]] = 1; issig[a, i] = 1 }
+                    # makepkg verifies the first of these it finds, and only that.
+                    if (cover(a, i, b)) continue
+                    for (e = 1; e <= ne; e++) if (cover(a, i, b "." ext[e])) break
                 }
             }
             for (j = 1; j <= na; j++) { a = order[j]
                 for (i = 1; i <= n[a]; i++) {
-                    u = url(src[a, i])
-                    if (u !~ /:\/\//) continue
-                    if (u ~ /^(git|hg|svn|bzr|fossil)(\+|:\/\/)/) continue
-                    if (issig[a, i] || ok[a, i] || signed[fname(src[a, i])]) continue
+                    p = proto(src[a, i])
+                    if (p == "local" || p ~ vcs) continue
+                    if (((a, i) in issig) || ((a, i) in ok) || ((a, fname(src[a, i])) in signed)) continue
                     print src[a, i]
                 }
             }
         }'
 }
 
-# Is this package still present in the AUR RPC index?
-#
-# cgit serves the git repos of *deleted* packages indefinitely, so a
-# successful .SRCINFO fetch does NOT prove the package still exists. A
-# deleted package's PKGBUILD can be many years stale, which makes the
-# "override: yay -S <pkg>" advice actively dangerous (2026-08-28: `gh`
-# resolved to a 2020-02-06 repo pinning GitHub CLI 0.5.4).
-#
-# Returns: 0 indexed, 1 not indexed, 2 could not determine.
-in_aur_index() {
-    local body
-    body=$(rpc_info "$1") || return 2
-    case "$body" in
-        *'"resultcount":0'*) return 1 ;;
-        *'"resultcount":'*)  return 0 ;;
-        *)                   return 2 ;;
-    esac
-}
-
-# Print triage hints after a REJECT, so the override isn't the obvious move.
-# Encodes the two ways a REJECT turns out not to need an allowlist row at all.
+# Print a triage hint after a REJECT, so the override isn't the obvious move:
+# an installed orphan is better removed than kept on a re-vet-forever row.
 reject_hints() {
     local pkg="$1"
-
-    # (a) Package deleted from the AUR — look for a repo replacement instead.
-    in_aur_index "$pkg"
-    case $? in
-        1)
-            echo "[pin-check] NOTE  $pkg is NOT in the AUR index — deleted or renamed." >&2
-            echo "    cgit still serves deleted packages' repos, so the source above may be" >&2
-            echo "    years stale. Do NOT use the 'yay -S $pkg' override; find the real" >&2
-            echo "    package first:  pacman -Ss $pkg   |   pacman -F $pkg" >&2
-            ;;
-        2)
-            echo "[pin-check] NOTE  could not reach the AUR index to confirm $pkg still exists." >&2
-            ;;
-    esac
-
-    # (b) Installed but orphaned — removal beats a re-vet-forever allowlist row.
-    if pacman -Qq "$pkg" >/dev/null 2>&1 \
+    if pacman -Qq -- "$pkg" >/dev/null 2>&1 \
        && pacman -Qdtq 2>/dev/null | grep -qxF -- "$pkg"; then
         echo "[pin-check] NOTE  $pkg is an orphan (installed as a dep, now required by nothing)." >&2
         echo "    Prefer 'pacman -Rns $pkg' over adding an allowlist row for it." >&2
     fi
 }
 
-# Is this source spec pinned to an immutable revision for its VCS?
-# The fragment must be followed by end-of-string, whitespace, or a `?query`.
-is_pinned() {
-    local url="$1" proto re
-    proto="${url%%+*}"; proto="${proto%%:*}"
-    case "$proto" in
-        git|fossil) re='#commit=([0-9a-fA-F]{40}|[0-9a-fA-F]{64})(\?|[[:space:]]|$)' ;;
-        hg)         re='#revision=[0-9a-fA-F]{40}(\?|[[:space:]]|$)' ;;
-        svn|bzr)    re='#revision=[0-9]+(\?|[[:space:]]|$)' ;;
-        *)          return 1 ;;
+# The protocol of a source entry, by makepkg's own rule (get_protocol).
+source_proto() {
+    local spec="$1" u="${1#*::}"
+    case "$spec" in
+        *://*) u="${u%%://*}"; printf '%s' "${u%%+*}" ;;
+        *lp:*) printf '%s' "${u%%+lp:*}" ;;
+        *)     printf local ;;
     esac
-    [[ "$url" =~ $re ]]
+}
+
+# Is this source entry pinned to an immutable revision for its VCS? It is given
+# whole, filename prefix and all, because that is what makepkg parses: everything
+# from the first `#` has to be the pin, and nothing else. `?signed` is makepkg
+# asking for a signature on top, and only its git handler knows the query.
+is_pinned() {
+    local spec="$1" frag
+    [[ "$spec" == *'#'* ]] || return 1
+    frag="${spec#*#}"
+    case "$(source_proto "$spec")" in
+        git)     [[ "$frag" =~ ^commit=[0-9a-fA-F]{40}(\?signed)?$ ]] ;;
+        fossil)  [[ "$frag" =~ ^commit=([0-9a-fA-F]{40}|[0-9a-fA-F]{64})$ ]] ;;
+        hg)      [[ "$frag" =~ ^revision=[0-9a-fA-F]{40}$ ]] ;;
+        svn|bzr) [[ "$frag" =~ ^revision=[0-9]+$ ]] ;;
+        *)       return 1 ;;
+    esac
 }
 
 # Is this dependency string met without building anything from the AUR — by
 # what is installed, or by a binary repository? Those are the deps yay leaves
-# alone; anything else it builds, so --deps checks it.
+# alone; anything else it builds, so --deps checks it. A group is not a
+# dependency: -Sddp expands `arduino` to its members and says yes, while yay
+# goes and builds the AUR package of that name.
 dep_met() {
+    local name="${1%%[<>=]*}"
     pacman -T -- "$1" >/dev/null 2>&1 && return 0
+    if pacman -Sg -- "$name" >/dev/null 2>&1 && ! pacman -Si -- "$name" >/dev/null 2>&1; then
+        return 1
+    fi
     LC_ALL=C pacman -Sddp --noconfirm --print-format '%n' -- "$1" >/dev/null 2>&1
 }
 
@@ -368,60 +656,99 @@ declare -A seen=()
 fail=0
 for (( qi = 0; qi < ${#queue[@]}; qi++ )); do
     pkg=${queue[qi]}
+    if ! valid_name "$pkg"; then
+        printf '[pin-check] ERROR %s: not a package name\n' "$pkg" | clean >&2
+        fail=1
+        continue
+    fi
     [[ -n "${seen[$pkg]:-}" ]] && continue
     seen[$pkg]=1
 
     # A name a binary repo carries is what `yay -S` installs from that repo —
     # unless the caller is building it from the AUR regardless (--from-aur).
-    if (( ! queue_aur[qi] )) && pacman -Si "$pkg" >/dev/null 2>&1; then
+    if (( ! queue_aur[qi] )) && pacman -Si -- "$pkg" >/dev/null 2>&1; then
         continue
     fi
 
-    srcinfo=$(fetch_srcinfo "$pkg") || {
-        if [[ -n "${queue_for[qi]}" ]]; then
-            echo "[pin-check] ERROR $pkg (a dependency of ${queue_for[qi]}): cannot fetch .SRCINFO from AUR" >&2
-            echo "    no repo package satisfies it and the AUR has no package by that name." >&2
-            echo "    If an AUR package PROVIDES it, install that one first, then retry." >&2
-        else
-            echo "[pin-check] ERROR $pkg: cannot fetch .SRCINFO from AUR" >&2
+    if (( name_is_base )); then
+        base=$pkg
+    else
+        base=$(aur_pkgbase "$pkg"); where=$?
+        if (( where == 1 )); then
+            if [[ -n "${queue_for[qi]}" ]]; then
+                echo "[pin-check] ERROR $pkg (a dependency of ${queue_for[qi]}): NOT in the AUR index." >&2
+                echo "    no repo package satisfies it and the AUR has no package by that name." >&2
+                echo "    If an AUR package PROVIDES it, install that one first, then retry." >&2
+            else
+                echo "[pin-check] ERROR $pkg: NOT in the AUR index — deleted, renamed, or never there." >&2
+                echo "    cgit still serves deleted packages' repos, and what it has may be years stale." >&2
+                echo "    Find the real package first:  pacman -Ss $pkg   |   pacman -F $pkg" >&2
+            fi
+            fail=1
+            continue
+        elif (( where != 0 )); then
+            echo "[pin-check] ERROR $pkg${queue_for[qi]:+ (a dependency of ${queue_for[qi]})}: could not ask the AUR index about it — not checked." >&2
+            fail=1
+            continue
         fi
+    fi
+
+    srcinfo=$(fetch_srcinfo "$base") || {
+        echo "[pin-check] ERROR $pkg: cannot fetch .SRCINFO from AUR" >&2
         fail=1
         continue
     }
-    base=$(awk '$1 == "pkgbase" { print $3; exit }' <<<"$srcinfo")
-    [[ -n "$base" ]] || base="$pkg"
+    # Is it one? And for this package? Anything else passes every test below by
+    # containing nothing they object to.
+    got=$(awk '$1 == "pkgbase" && $2 == "=" { print $3; exit }' <<<"$srcinfo")
+    if [[ "$got" != "$base" ]]; then
+        printf '[pin-check] ERROR %s: what came back is not the .SRCINFO of %s (pkgbase: %s)\n' \
+            "$pkg" "$base" "${got:-none}" | clean >&2
+        fail=1
+        continue
+    fi
+    if (( ! name_is_base )) && ! awk -v p="$pkg" '$1 == "pkgname" && $3 == p { f = 1 } END { exit !f }' <<<"$srcinfo"; then
+        echo "[pin-check] ERROR $pkg: the .SRCINFO of $base does not list a package by that name" >&2
+        fail=1
+        continue
+    fi
 
     if (( walk_deps )); then
+        # Only what this machine would pull in: a dependency of another
+        # architecture is not a dependency here, and refusing over one that
+        # only an aarch64 build needs would be refusing a package for nothing.
         while IFS= read -r dep; do
             [[ -n "$dep" ]] || continue
             dep_met "$dep" && continue
             dname="${dep%%[<>=]*}"
             [[ -n "${seen[$dname]:-}" ]] && continue
             queue+=("$dname"); queue_aur+=(1); queue_for+=("$pkg")
-        done < <(awk -F' = ' '
-            /^[[:space:]]*(depends|makedepends|checkdepends)(_[a-z0-9_]+)? *=/ {print $2}' <<<"$srcinfo")
+        done < <(awk -v arch="$(uname -m)" '
+            { sub(/^[[:space:]]+/, ""); p = index($0, " = "); if (!p) next
+              key = substr($0, 1, p - 1); sub("_" arch "$", "", key)
+              if (key ~ /^(depends|makedepends|checkdepends)$/) print substr($0, p + 3) }' <<<"$srcinfo")
     fi
 
-    # Extract source URLs. .SRCINFO format: "\tsource = <spec>", plus the
-    # arch-specific arrays "\tsource_x86_64 = <spec>" — which are sources
-    # exactly as much as the plain array is, and used to be skipped.
+    # Extract the sources. .SRCINFO format: "\tsource = <spec>", plus the
+    # arch-specific arrays "\tsource_x86_64 = <spec>" — which are sources exactly
+    # as much as the plain array is. A value runs to the end of the line.
     unpinned=()
     srcinfo_vcs=0
     allowed=0
     rejected=0
     while IFS= read -r spec; do
-        # Strip optional "local-name::" prefix (e.g. pkgname.tar.gz::https://...)
-        url="${spec#*::}"
-        # Only examine VCS pseudo-URLs: every VCS protocol makepkg supports,
-        # in both its `proto+transport://` and bare `proto://` spellings.
-        case "$url" in
-            git+*|git://*|hg+*|hg://*|svn+*|svn://*|bzr+*|bzr://*|fossil+*|fossil://*) ;;
+        # Only VCS sources: every protocol makepkg supports, by makepkg's rule,
+        # so `git+https-fix.patch` stays the local file it is.
+        case "$(source_proto "$spec")" in
+            git|hg|svn|bzr|fossil) ;;
             *) continue ;;
         esac
         srcinfo_vcs=$((srcinfo_vcs + 1))
-        is_pinned "$url" && continue
+        is_pinned "$spec" && continue
         # Allowlist: tag→SHA verification against recorded expected SHA.
-        expected_sha=$(allowlist_sha "$pkg" "$url")
+        url="${spec#*::}"
+        expected_sha=""
+        allowlistable "$spec" && expected_sha=$(allowlist_sha "$base" "$url")
         if [[ -n "$expected_sha" ]]; then
             actual_sha=$(resolve_git_tag "$url")
             if [[ -z "$actual_sha" ]]; then
@@ -440,19 +767,27 @@ for (( qi = 0; qi < ${#queue[@]}; qi++ )); do
             fi
             continue
         fi
-        unpinned+=("$url")
-    done < <(awk -F' = ' '/^[[:space:]]*source(_[a-z0-9_]+)? *=/ {print $2}' <<<"$srcinfo")
+        unpinned+=("$spec")
+    done < <(awk '
+        { sub(/^[[:space:]]+/, ""); sub(/[[:space:]]+$/, ""); p = index($0, " = "); if (!p) next }
+        substr($0, 1, p - 1) ~ /^source(_[A-Za-z0-9_]+)?$/ { print substr($0, p + 3) }' <<<"$srcinfo")
 
     # The other half of "what am I building": a download nothing verifies.
-    mapfile -t unverified < <(srcinfo_unverified <<<"$srcinfo")
+    if ! list=$(srcinfo_unverified <<<"$srcinfo"); then
+        echo "[pin-check] ERROR $pkg: could not read the .SRCINFO's checksums" >&2
+        fail=1
+        continue
+    fi
+    unverified=()
+    [[ -z "$list" ]] || mapfile -t unverified <<<"$list"
 
     if (( ${#unpinned[@]} > 0 )); then
         echo "[pin-check] REJECT $pkg: ${#unpinned[@]} unpinned VCS source(s):" >&2
-        printf '    %s\n' "${unpinned[@]}" >&2
+        printf '    %s\n' "${unpinned[@]}" | clean >&2
     fi
     if (( ${#unverified[@]} > 0 )); then
         echo "[pin-check] REJECT $pkg: ${#unverified[@]} download(s) that nothing verifies (checksum SKIP, no signature):" >&2
-        printf '    %s\n' "${unverified[@]}" >&2
+        printf '    %s\n' "${unverified[@]}" | clean >&2
         echo "    makepkg will build whatever that URL serves on the day, unchecked." >&2
         echo "    No allowlist row covers this: a moving download has no revision to record." >&2
     fi
@@ -473,18 +808,37 @@ for (( qi = 0; qi < ${#queue[@]}; qi++ )); do
         fail=1
         continue
     }
+    if ! grep -qE '^[[:space:]]*(pkgname|pkgbase)=' <<<"$pkgbuild"; then
+        echo "[pin-check] ERROR $pkg: what came back is not a PKGBUILD" >&2
+        fail=1
+        continue
+    fi
+    rows=$(pkgbuild_elements <<<"$pkgbuild") || {
+        echo "[pin-check] ERROR $pkg: could not read the PKGBUILD's arrays" >&2
+        fail=1
+        continue
+    }
     pb_unpinned=()
     pb_total=0
-    while IFS= read -r u; do
-        [[ -n "$u" ]] || continue
+    while IFS=$'\t' read -r _ _ u; do
+        case "$(source_proto "$u")" in
+            git|hg|svn|bzr|fossil) ;;
+            *) continue ;;
+        esac
+        u="${u#*::}"
         pb_total=$((pb_total + 1))
-        [[ "$u" == *'#commit='* || "$u" == *'#revision='* ]] || pb_unpinned+=("$u")
-    done < <(pkgbuild_vcs_urls <<<"$pkgbuild")
+        # A \001 is an expansion nobody can read without running it, and it may
+        # well be the pin: ${_commit:+#commit=$_commit} is a real idiom.
+        [[ "$u" == *'#commit='* || "$u" == *'#revision='* || "$u" == *$'\001'* ]] || pb_unpinned+=("$u")
+    done < <(awk -F'\t' -v archs="$(awk '$1 == "arch" { print $3 }' <<<"$srcinfo")" '
+        BEGIN { n = split(archs, t, "\n"); A["source"] = 1
+                for (i = 1; i <= n; i++) A["source_" t[i]] = 1 }
+        $1 == "E" && ($2 in A)' <<<"$rows")
     if (( ${#pb_unpinned[@]} > allowed || (pb_total > 0 && srcinfo_vcs == 0) )); then
         echo "[pin-check] REJECT $pkg: the PKGBUILD does not match its .SRCINFO." >&2
         echo "    .SRCINFO lists $srcinfo_vcs VCS source(s); the PKGBUILD's source arrays name $pb_total," >&2
         echo "    ${#pb_unpinned[@]} of them without a pinned revision:" >&2
-        printf '    %s\n' "${pb_unpinned[@]:-"(all pinned, but absent from .SRCINFO)"}" >&2
+        printf '    %s\n' "${pb_unpinned[@]:-"(all pinned, but absent from .SRCINFO)"}" | clean >&2
         echo "    A .SRCINFO that hides a source is how a gate like this one is fooled." >&2
         echo "    Read the PKGBUILD before trusting this package:" >&2
         printf '    %s\n' "$(printf "$AUR_PKGBUILD_URL" "$(urlenc "$base")")" >&2
@@ -492,25 +846,17 @@ for (( qi = 0; qi < ${#queue[@]}; qi++ )); do
         continue
     fi
 
-    # The same tripwire for checksums. makepkg obeys the PKGBUILD; a .SRCINFO
-    # that shows a hash where the PKGBUILD says SKIP is showing a check that
-    # will never run. An array may say SKIP in the PKGBUILD only as often as
-    # the .SRCINFO admits it does.
-    declare -A si_skips=()
-    while read -r name count; do
-        [[ -n "$name" ]] && si_skips[$name]=$count
-    done < <(srcinfo_skip_counts <<<"$srcinfo")
-    hidden=()
-    while read -r name count; do
-        [[ -n "$name" ]] || continue
-        (( count > ${si_skips[$name]:-0} )) \
-            && hidden+=("$name: SKIP x$count in the PKGBUILD, x${si_skips[$name]:-0} in .SRCINFO")
-    done < <(pkgbuild_skip_counts <<<"$pkgbuild")
-    unset si_skips
-    if (( ${#hidden[@]} > 0 )); then
+    # The same question for everything else: makepkg obeys the PKGBUILD, and the
+    # .SRCINFO is what was judged above, so a URL, a checksum or a signing key
+    # that differs between them means the verdict was about something else.
+    if ! diffs=$(pkgbuild_mismatches "$srcinfo" "$rows"); then
+        echo "[pin-check] ERROR $pkg: could not compare the PKGBUILD with its .SRCINFO" >&2
+        fail=1
+        continue
+    fi
+    if [[ -n "$diffs" ]]; then
         echo "[pin-check] REJECT $pkg: the PKGBUILD does not match its .SRCINFO." >&2
-        echo "    Its checksum arrays skip verification the .SRCINFO claims is done:" >&2
-        printf '    %s\n' "${hidden[@]}" >&2
+        sort <<<"$diffs" | sed 's/^/    /' | clean >&2
         echo "    makepkg obeys the PKGBUILD. Read it before trusting this package:" >&2
         printf '    %s\n' "$(printf "$AUR_PKGBUILD_URL" "$(urlenc "$base")")" >&2
         fail=1

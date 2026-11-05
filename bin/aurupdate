@@ -13,7 +13,30 @@
 
 set -uo pipefail
 
-mapfile -t upgrades < <(yay -Qua 2>/dev/null | awk '{print $1}')
+# yay gets exactly what the gate was shown. A package name here would reach
+# `yay -Sua` without being in the pending list; an option such as --devel has to
+# reach -Qua as well, or the set it adds is one nothing looked at.
+for a in "$@"; do
+    case "$a" in
+        -*) ;;
+        *) echo "[aurupdate] takes no package names ('$a'): use aurinstall for that" >&2; exit 2 ;;
+    esac
+done
+
+command -v yay >/dev/null 2>&1 || { echo "[aurupdate] ERROR: yay is not installed" >&2; exit 2; }
+
+# -Qua exits 1 whether nothing is pending or the AUR could not be reached. Only
+# the second says anything on stderr, and it is not "no upgrades pending".
+err=$(mktemp) || exit 2
+trap 'rm -f "$err"' EXIT
+pending=$(yay -Qua "$@" 2>"$err"); rc=$?
+if (( rc != 0 )) && [[ -s "$err" ]]; then
+    echo "[aurupdate] ERROR: could not ask which AUR upgrades are pending:" >&2
+    sed 's/^/    /' "$err" >&2
+    exit 1
+fi
+upgrades=()
+[[ -z "$pending" ]] || mapfile -t upgrades < <(awk '{print $1}' <<<"$pending")
 
 if (( ${#upgrades[@]} == 0 )); then
     echo "[aurupdate] no AUR upgrades pending" >&2
