@@ -4,15 +4,16 @@
 [![License: MIT](https://img.shields.io/badge/License-MIT-yellow.svg)](LICENSE)
 [![Free and open source](https://img.shields.io/badge/Free%20and%20open%20source-brightgreen.svg)](LICENSE)
 [![Shell: bash](https://img.shields.io/badge/shell-bash-4EAA25.svg)](#requirements)
-[![Tests: 120](https://img.shields.io/badge/tests-120%20passing-brightgreen.svg)](#testing)
+[![Tests: 137](https://img.shields.io/badge/tests-137%20passing-brightgreen.svg)](#testing)
 [![No runtime deps](https://img.shields.io/badge/runtime%20deps-pacman%20%2B%20coreutils-lightgrey.svg)](#requirements)
 
 **Use the AUR on Manjaro without breaking your system.** A small suite of
 `pacman` and `yay` wrappers that closes the three failure modes behind almost
 every "Manjaro AUR disaster": the **partial upgrade** caused by Manjaro's
 two-week lag behind Arch, the **stale-soname breakage** that hits every AUR
-package after Manjaro finally catches up, and the **unpinned VCS source** that
-lets an AUR PKGBUILD build something other than what you reviewed.
+package after Manjaro finally catches up, and the **unpinned source** — a VCS
+checkout with no commit, or a download with no checksum — that lets an AUR
+PKGBUILD build something other than what you reviewed.
 
 > **Not on Manjaro yet? Install [EndeavourOS](https://endeavouros.com/)
 > instead, and you will never need this.** EndeavourOS is Arch — Arch's own
@@ -35,244 +36,19 @@ Manjaro is infamous for its "two-week delay" on syncing upstream Arch packages�
 **Satyrus-manjaro** is the mentor that fixes the stutter. It bypasses the artificial delays and dependency fractures, forcing Manjaro to correctly resolve, build, and articulate AUR packages without breaking the system.
 
 It is six short bash scripts, no daemon, no runtime dependency beyond pacman,
-coreutils and fakeroot, and 120 tests, 61 of which run real `pacman`
-transactions on a loop device.
+coreutils, binutils and fakeroot, and 137 tests in CI, 66 of which run real
+`pacman` transactions on a loop device — plus an integration suite that runs
+on a real Manjaro install, against the real `chrootbuild` and the live AUR.
 
-**Guides:** [AUR package broken after a Manjaro update](https://doug445.github.io/Satyrus-manjaro/aur-package-broken-after-manjaro-update/) ·
-["could not satisfy dependencies" with chaotic-aur or BlackArch](https://doug445.github.io/Satyrus-manjaro/manjaro-partial-upgrade-could-not-satisfy-dependencies/)
+**Here because of an error message?** Two step-by-step guides, each usable
+without installing anything:
 
----
-
-## The problem, in other people's words
-
-This suite exists because of a specific, well-documented property of Manjaro:
-its Stable branch trails Arch, while the AUR does not. That gap is the whole
-story, and it is worth reading the complaint before the fix.
-
-> "some AUR packages require certain dependencies to run, which they expect to
-> install from the official Arch repo. However, on Manjaro, the necessary
-> dependency might be running on an older version, which has some compatibility
-> issues with the AUR package. […] This can create a fundamental compatibility
-> mismatch that can lead to broken installations, missing dependencies, or
-> packages that simply refuse to build."
->
-> — Dibakar Ghosh, [*3 Reasons I Avoid Manjaro Even Though I Love Arch
-> Linux*](https://www.howtogeek.com/why-i-avoid-manjaro-even-though-i-love-arch-linux/),
-> How-To Geek, 1 September 2025
-
-Manjaro's own moderators do not dispute the risk. They document it and decline
-to fix it:
-
-> "Remember, the AUR is neither officially supported by Arch nor by Manjaro.
-> Using it is at your own risk and your own responsibility."
->
-> — linux-aarhus, [*Responsible use of
-> AUR*](https://forum.manjaro.org/t/responsible-use-of-aur/86392), Manjaro Linux
-> Forum, 14 October 2021
-
-> "any CUSTOM package may cease to function without warning OR your system may
-> cease to function due to a CUSTOM package"
->
-> — linux-aarhus, [*[Need-To-Know] About Manjaro and
-> AUR*](https://forum.manjaro.org/t/need-to-know-about-manjaro-and-aur/103617),
-> Manjaro Linux Forum, 23 February 2022
-
-That second sentence is an accurate description of the failure mode, and it is
-also an accurate description of what this suite exists to detect. Being told
-the risk is yours is only useful if you have some way of seeing it.
-
-So: the AUR assumes you are current with Arch. Manjaro's Stable branch
-deliberately is not. Nobody supports the gap. **This suite is the gap,
-handled.**
-
-### Manjaro puts the AUR in its own package manager, then disowns it
-
-Pamac — the "Add/Remove Software" app on every Manjaro desktop — has AUR
-support built in, behind a switch in its preferences. Then Manjaro's own
-moderator, linux-aarhus, tells the people who flip that switch that the AUR
-"is neither officially supported by Arch nor by Manjaro. Using it is at your
-own risk and your own responsibility", and that "any CUSTOM package may cease
-to function without warning OR your system may cease to function due to a
-CUSTOM package" (both quoted above). Manjaro builds the door, holds its Stable
-branch back from the Arch packages the AUR is written against, and tells you
-that whatever comes through the door is your problem.
-
-### Manjaro's record
-
-From its own forum, mailing lists and issue tracker:
-
-- **Pamac has been blocked from the AUR — at least twice.** The AUR's
-  administrators, in Manjaro's own tracker: "Pamac user agent was responsible
-  for making a very large number of requests to the AUR … We have completely
-  blocked the Pamac user agent, to restore service for the users"
-  ([Pamac #1017](https://gitlab.manjaro.org/applications/pamac/-/issues/1017)).
-  It happened again
-  ([Pamac #1135](https://gitlab.manjaro.org/applications/pamac/-/issues/1135);
-  ["Manjaro banned from AUR!?"](https://forum.manjaro.org/t/manjaro-banned-from-aur/89986)).
-  The AUR serves every Arch-based distribution; Manjaro's tool took it down
-  for all of them — EndeavourOS users included, who were left asking
-  ["Is AUR down again?"](https://web.archive.org/web/20220221092555/https://forum.endeavouros.com/t/is-aur-down-again/24287/9).
-  Manjaro's response was a forum thread titled
-  ["AUR — please restrain yourself"](https://web.archive.org/web/20220221090752/https://forum.manjaro.org/t/aur-please-restrain-yourself/103318),
-  addressed to its users. Its wiki still warns them not to enable Pamac's AUR
-  update checks, because they flood the AUR and get Pamac denylisted. The
-  switch is still there.
-- **Its certificates keep expiring.** In 2015 Manjaro's own notice read "Seems
-  we forgot to update our SSL certificate in time" and told users to set their
-  clocks back
-  ([archived](https://web.archive.org/web/20150409040851/https://manjaro.github.io/expired_SSL_certificate/)).
-  In 2016: "the SSL certificate has once again expired"
-  ([manjaro-dev](https://lists.manjaro.org/pipermail/manjaro-dev/Week-of-Mon-20160509/001164.html)).
-  In 2022 the certificate for its mirrors, downloads and AUR hosts lapsed
-  ([forum](https://forum.manjaro.org/t/mirrors-download-aur-manjaro-org-ssl-certificate-expired/115074)),
-  then software.manjaro.org's — "again"
-  ([forum](https://forum.manjaro.org/t/software-manjaro-org-expired-certificate-again/119696)),
-  then the archived forum's
-  ([forum](https://forum.manjaro.org/t/am-i-the-only-one-getting-expired-certificate-warning-on-archived-forum-manjaro-org/126049)).
-  A distribution that cannot keep a certificate renewed is asking you to trust
-  it with your packages.
-- **It rushed Apple Silicon.** Manjaro shipped Asahi Linux packages pulled
-  from the latest PKGBUILD without coordinating with the Asahi developers, and
-  Asahi's then project lead objected publicly
-  ([archived](https://web.archive.org/web/20221208084616/https://twitter.com/marcan42/status/1576414477272387584)).
-- **Arch will not help you.** The Arch forums are "for Arch Linux x86_64 ONLY.
-  Not Artix, or Apricity, or Manjaro … Ask those communities for support"
-  ([Arch forums](https://bbs.archlinux.org/register.php)). Manjaro's answer
-  for the AUR, as above, is that it is your own responsibility.
-
-[manjarno](https://manjarno.pages.dev/) catalogues more of the same, with
-sources.
-
-### Who answers for it
-
-Philip Müller co-founded Manjaro, leads it, and posts its branch update
-announcements. Every item above happened on his watch, most of them more than
-once, and none of them changed the project's answer to the AUR: switch it on
-in Pamac, and the consequences are yours. That answer is delivered by
-linux-aarhus, whose forum posts are the most precise account anywhere of how a
-Manjaro system breaks under the AUR — precise enough that this suite builds on
-two of them (credited under [Building in a chroot](#building-in-a-chroot)).
-Precision is not a fix. Five years of "your own risk and your own
-responsibility" is five years of Manjaro's lead and its senior moderator
-describing a hole in their own distribution and leaving users to fill it. A
-project that cannot keep a certificate renewed, gets its own package manager
-locked out of the AUR it advertises, and answers both with a disclaimer has not
-earned the word "Stable" on its branch. If that is not good enough for you,
-the answer is at the top of this page. 
-
-
-
-### About those two weeks
-
-Manjaro's headline feature is a calendar. Its Stable branch is Arch with a
-two-week delay, sold as "testing" — testing that the AUR, the reason half its
-users came, never takes part in. So the AUR keeps building for an Arch that
-Manjaro users will not have for another fortnight, things break in the gap, and
-the official response is a forum post explaining that the breakage is yours.
-That is not curation; it is jet lag with a disclaimer. Two weeks late also
-means two weeks late for security and bug fixes, every time. Arch and
-EndeavourOS users get today's packages. Manjaro users get last fortnight's,
-plus a moderator telling them it is their own fault. This suite exists so you do not have to choose between the
-AUR and a system that boots.
-
----
-
-## What actually goes wrong, and what closes it
-
-Manjaro's lag produces two failures that look unrelated and are really the same
-clock running in opposite directions. A third, orthogonal risk comes from the
-AUR itself.
-
-| # | Failure | When it bites | What closes it |
-|---|---|---|---|
-| 1 | **Partial upgrade.** A third-party binary repo (BlackArch, chaotic-aur) rebuilt against Arch's `libfoo 2.0`. Manjaro still ships `1.0`. Installing the new package drags in a dependency Manjaro cannot satisfy. | While Manjaro is behind | `safeup` probes every pending foreign upgrade's version-constrained deps against what is installed and what the same upgrade brings in (`pacman -T`, then `pacman -Sddp`), and `--ignore`s the ones that cannot be satisfied *yet* |
-| 2 | **Stale soname.** Manjaro finally ships `libfoo 2.0`. Every AUR package you built against `1.0` now fails to resolve its `DT_NEEDED` and dies at runtime — often silently, often days later. | When Manjaro catches up | `aur-rebuild-check` walks every AUR-owned ELF with `ldd` and names the packages that need rebuilding |
-| 3 | **Unpinned VCS source.** A PKGBUILD's `source=` is `git+https://…` with no commit. What you audited last week is not what builds today. Tags do not help — upstream can move a tag. | Any time you install or upgrade | `aur-pin-check` refuses any VCS source not pinned to an immutable revision (`#commit=<sha>` for git and fossil, `#revision=` for hg, svn and bzr), and re-verifies allowlisted tags against their recorded SHA on every run |
-
-### How honest is "solves it completely"?
-
-Completely, for the three failures above — that is what the test suite
-demonstrates, package by package. For the third, that means against a careless
-or drifting maintainer, not a hostile one: see
-[What the pin check cannot do](#what-the-pin-check-cannot-do). And not
-completely for Manjaro in general. Read
-[What this does not do](#what-this-does-not-do) before you rely on it.
-
----
-
-## "But this automates `pacman --ignore`"
-
-It does, and that deserves a real answer rather than reassurance. `--ignore` is
-listed on the Arch wiki as a way to **cause** partial upgrades, so a tool that
-reaches for it automatically is right to be treated with suspicion.
-
-**`--ignore` suppresses an upgrade. It does not suppress dependency
-resolution.** pacman still resolves the entire transaction and refuses one that
-would leave a dependency unsatisfied. Here is that being tested rather than
-asserted — `consumer 1.0` requires `libX=1.0`, both have upgrades pending, and
-`libX` is ignored so that `consumer 2.0` would need a `libX 2.0` that will not
-be installed:
-
-```console
-$ pacman -Syu --noconfirm --ignore libX
-warning: ignoring package libX-2.0-1
-warning: cannot resolve "libX=2.0", a dependency of "consumer"
-error: failed to prepare transaction (could not satisfy dependencies)
-:: unable to satisfy dependency 'libX=2.0' required by consumer
-                                                            exit 1
-
-$ pacman -Q                       # nothing moved
-consumer 1.0-1
-libX 1.0-1
-
-$ pacman -Dk                      # pacman's own consistency audit
-No database errors have been found!
-```
-
-You cannot `--ignore` your way into an unsatisfied dependency. **pacman is the
-backstop, not this script** — which is the correct arrangement, because pacman
-is the thing that actually knows.
-
-That transcript is section 19 of
-[`tests/loopback-core-test.sh`](tests/loopback-core-test.sh) and runs in CI on
-every push, against real pacman transactions. It is deliberately a test of
-*pacman's* behaviour rather than of this code: the safety argument for the whole
-suite rests on that property, nothing here would notice if a future pacman
-changed it, and the consequence would be silent. The same section then asserts
-that a real `safeup` hold inherits it — `pacman -Dk` still reports a consistent
-system afterwards.
-
-Beyond that guarantee, **what** gets held matters:
-
-- It only holds a package from a **foreign** repo whose version-constrained
-  dependency is **already unsatisfiable** — one that cannot install correctly
-  at that moment regardless. A Manjaro repo package is never held.
-- It holds the **new** version back, so the package keeps the dependencies it
-  already had and stays in the state it was already working in. The classic
-  dangerous pattern is pinning a *library* while upgrading its dependents; this
-  is the opposite direction.
-- When a Manjaro upgrade breaks an **AUR** package's dependency
-  (`installing X breaks dependency … required by Y`), the library still goes
-  ahead. The repo upgrade lands in full, with `--assume-installed` standing in
-  for Y's stale dependency, and Y is named for a rebuild; `safeup --aur`
-  rebuilds it straight away. The AUR package is the one that is out of date,
-  so it is the one left broken until it is rebuilt. If Y comes from a repo,
-  the mirrors disagree mid-sync: nothing changes and `safeup` says to wait.
-  (Up to 1.5.0 this path held the library — the very pattern above.)
-- The realistic alternative is not a clean full upgrade. It is a refused
-  transaction, or a person reaching for `--ignore` by hand with worse aim.
-- Every hold, and every AUR package left needing a rebuild, is printed and
-  written to `/var/log/safeup.log`. A silent
-  indefinite pin is the real long-term hazard, so a hold is made into a
-  *deferred* upgrade you can chase rather than a package that quietly stops
-  updating.
-
-**The limitation, stated plainly:** `safeup` does not pre-check whether a
-package it holds is itself required by something else in the same transaction.
-It relies on pacman refusing, and then acts on pacman's own message. The transcript above
-is why that is acceptable — but it works that way because pacman is sound, not
-because this script is clever, and you should know which of those you are
-trusting.
+- `error while loading shared libraries: libfoo.so.N: cannot open shared object file`
+  after a Manjaro update →
+  [AUR package broken after a Manjaro update](https://doug445.github.io/Satyrus-manjaro/aur-package-broken-after-manjaro-update/)
+- `error: failed to prepare transaction (could not satisfy dependencies)` with
+  chaotic-aur or BlackArch enabled →
+  [Manjaro "could not satisfy dependencies"](https://doug445.github.io/Satyrus-manjaro/manjaro-partial-upgrade-could-not-satisfy-dependencies/)
 
 ---
 
@@ -305,6 +81,15 @@ aurupdate              # yay -Sua, with the pin-check gate
 aur-rebuild-check      # what needs rebuilding after a library or python bump
 ```
 
+> **The protection is in the wrappers, and only there.** `pacman -Syu`,
+> `yay -S`, `yay -Syu` and Pamac all still work after you install this, and
+> none of them goes through a single check described on this page. Nothing
+> here hooks, replaces or restricts the real package managers — on purpose,
+> see [Nothing here is enforcement](#nothing-here-is-enforcement) — so the
+> suite protects exactly the commands you run through it and no others. One
+> `yay -Syu` out of habit is one unguarded upgrade. Alias the habit away, as
+> below, and keep a bare `yay -S` for what it then is: a deliberate override.
+
 Suggested aliases, which `deploy.sh` deliberately does **not** write for you:
 
 ```bash
@@ -315,16 +100,69 @@ alias yupdate='safeup ; aurupdate'
 
 ---
 
+## What actually goes wrong, and what closes it
+
+Manjaro's lag produces two failures that look unrelated and are really the same
+clock running in opposite directions. A third, orthogonal risk comes from the
+AUR itself.
+
+| # | Failure | When it bites | What closes it |
+|---|---|---|---|
+| 1 | **Partial upgrade.** A third-party binary repo (BlackArch, chaotic-aur) rebuilt against Arch's `libfoo 2.0`. Manjaro still ships `1.0`. Installing the new package drags in a dependency Manjaro cannot satisfy. | While Manjaro is behind | `safeup` probes every pending foreign upgrade's version-constrained deps against what is installed and what the same upgrade brings in (`pacman -T`, then `pacman -Sddp`), and `--ignore`s the ones that cannot be satisfied *yet* |
+| 2 | **Stale soname.** Manjaro finally ships `libfoo 2.0`. Every AUR package you built against `1.0` now fails to resolve its `DT_NEEDED` and dies at runtime — often silently, often days later. | When Manjaro catches up | `aur-rebuild-check` reads the `DT_NEEDED` entries of every AUR-owned ELF, looks each one up the way the loader would — without loading or running the file — and names the packages that need rebuilding |
+| 3 | **Unpinned source.** A PKGBUILD's `source=` is `git+https://…` with no commit — or a tarball URL whose checksum is `SKIP`, which makepkg accepts and then verifies nothing. What you audited last week is not what builds today. Tags do not help — upstream can move a tag. | Any time you install or upgrade | `aur-pin-check` refuses any VCS source not pinned to an immutable revision (`#commit=<sha>` for git and fossil, `#revision=` for hg, svn and bzr), re-verifies allowlisted tags against their recorded SHA on every run, and refuses any other download that neither a real checksum nor a signature verifies |
+
+### How honest is "solves it completely"?
+
+Completely, for the three failures above — that is what the test suite
+demonstrates, package by package. For the third, that means against a careless
+or drifting maintainer, not a hostile one: see
+[What the pin check cannot do](#what-the-pin-check-cannot-do). And not
+completely for Manjaro in general. Read
+[What this does not do](#what-this-does-not-do) before you rely on it.
+
+---
+
 ## The tools
 
 | Tool | Wraps | What it adds |
 |---|---|---|
 | **`safeup`** | `pacman -Syu` | Auto-detects foreign repos from `pacman.conf` (anything outside `core`/`extra`/`multilib`/`community` and their `-testing` variants). Judges each pending upgrade by the copy pacman will actually install — the first repo in `pacman.conf` order that carries it — and holds a foreign one whose version-constrained dependency is satisfied neither now (`pacman -T`) nor by the same upgrade (`pacman -Sddp`). The pre-flight runs against a private snapshot of the sync databases, so the real one is never refreshed without being upgraded. On `installing X breaks dependency … required by Y` for an AUR `Y`, upgrades anyway with `--assume-installed` standing in for Y's stale dependency and names `Y` for a rebuild — a repo library is never held back; if `Y` comes from a repo, stops with nothing changed. `--check` reports without root and changes nothing; `--aur` chains `aurupdate`, and the rebuild of any AUR package the upgrade broke, after a clean repo upgrade. Chains into `aur-rebuild-check` on success. Logs every hold and every needed rebuild to `/var/log/safeup.log`. |
-| **`aur-rebuild-check`** | — | `ldd`s every ELF owned by every `pacman -Qmq` package — found by magic bytes, so `/opt/<app>/<exe>` counts — and reports `=> not found`. Also flags a package with files under a `/usr/lib/python3.X/` that is not the installed python's: the pure-Python breakage a soname scan cannot see. A tree whose own interpreter is still installed (`python311` from the AUR) is live, not stale. Filters the two false positives that otherwise flag `-bin` packages forever: privately bundled libraries resolved through an `$ORIGIN` RPATH, and optional sonames named in `AUR_REBUILD_IGNORE_SONAMES`. `--fix` offers `yay -S --rebuild`, after `aur-pin-check --deps` has passed the set. |
-| **`aur-pin-check`** | — | Fetches `.SRCINFO` from AUR cgit (resolving a split package to its pkgbase through the RPC) and rejects any `git`/`hg`/`svn`/`bzr`/`fossil` source — in `source =` or any `source_<arch> =` — that is not pinned to an immutable revision. `#tag=` and `#branch=` are rejected on principle. Tarballs pass — `sha256sums` already cover them. Has a TOFU allowlist for tag-pinned upstreams. Reads the PKGBUILD too, as text, and rejects one whose source arrays name an unpinned VCS source the `.SRCINFO` hides. `--deps` also checks every AUR dependency the build would pull in; `--from-aur` checks a name even when a binary repo carries it. Names are URL-encoded, so `aewm++` works. On rejection it tells you whether the package was deleted from the AUR, or is an installed orphan you should simply remove. |
+| **`aur-rebuild-check`** | — | Reads the dynamic section of every ELF owned by every `pacman -Qmq` package (`readelf` — the file is never loaded or run) — found by magic bytes, so `/opt/<app>/<exe>` counts — and reports each `DT_NEEDED` that the object's own `RUNPATH`, `ld.so.cache` and the default library directories cannot supply. Also flags a package with files under a `/usr/lib/python3.X/` that is not the installed python's: the pure-Python breakage a soname scan cannot see. A tree whose own interpreter is still installed (`python311` from the AUR) is live, not stale. Filters the two false positives that otherwise flag `-bin` packages forever: privately bundled libraries resolved through an `$ORIGIN` RPATH, and optional sonames named in `AUR_REBUILD_IGNORE_SONAMES`. `--fix` offers `yay -S --rebuild`, after `aur-pin-check --deps` has passed the set. |
+| **`aur-pin-check`** | — | Fetches `.SRCINFO` from AUR cgit (resolving a split package to its pkgbase through the RPC) and rejects any `git`/`hg`/`svn`/`bzr`/`fossil` source — in `source =` or any `source_<arch> =` — that is not pinned to an immutable revision. `#tag=` and `#branch=` are rejected on principle. Any other remote source must be verified by a real checksum or a detached signature: one whose checksums are all `SKIP` is rejected, because makepkg then checks nothing. Has a TOFU allowlist for tag-pinned upstreams. Reads the PKGBUILD too, as text, and rejects one whose source arrays name an unpinned VCS source the `.SRCINFO` hides, or whose checksum arrays say `SKIP` where the `.SRCINFO` shows a hash. `--deps` also checks every AUR dependency the build would pull in; `--from-aur` checks a name even when a binary repo carries it. Names are URL-encoded, so `aewm++` works. On rejection it tells you whether the package was deleted from the AUR, or is an installed orphan you should simply remove. |
 | **`aurinstall`** | `yay -S` | Runs the pin-check gate first — on the package and every AUR dependency it pulls in — and refuses to exec `yay` if it fails. Then builds in Manjaro's own `chrootbuild` when that will work — dependency chains included, deps first — pin-checking the clones it is about to build and offering the PKGBUILDs for review first, falling back to `yay` with a stated reason when it will not, and installs the result (one `[Y/n]` away on a terminal; `--install`/`--no-install` decide for scripts). See [Building in a chroot](#building-in-a-chroot). |
 | **`aurupdate`** | `yay -Sua` | Pin-checks every package with a pending AUR upgrade, and every AUR dependency those upgrades pull in, before any of them build. |
 | **`remove-versioned-kernel`** | `pacman -Rns` | Evicts `linuxNN`, `linuxNN-headers` and every `linuxNN-*` extramodule that depends on the kernel (`-nvidia`, `-r8168`, `-zfs`, …) in one transaction, then prunes exactly those names from `IgnorePkg` — nothing else is touched, nothing is added. Refuses to remove the running kernel (by module-directory owner *and* by `uname -r` version) or the last one you have. |
+
+### How the six scripts fit together
+
+```
+ UPGRADE                                   AUR INSTALL / AUR UPGRADE
+
+ safeup                                    aurinstall <pkg>        aurupdate
+   │                                           │                      │  yay -Qua
+   ├─ private snapshot of the sync DBs         └──────────┬───────────┘
+   │    pre-flight: pacman -T, -Sddp                      ▼
+   │    unsatisfiable foreign pkg → --ignore      aur-pin-check --deps
+   │                                              reads .SRCINFO and PKGBUILD
+   ├─ sudo pacman -Syu                            as text; runs neither
+   │    pacman refuses anything inconsistent        │
+   │    — it is the backstop, not safeup            ├─ REJECT → stop, nothing built
+   │                                                │
+   ├─ --aur ───────────────► aurupdate              └─ pass
+   │                                                    │
+   └─ aur-rebuild-check                    aurinstall ──┼─► chrootbuild -b <branch>
+        readelf on every AUR-owned ELF                  │    (clone, re-check the
+        │                                               │     clone, build, pacman -U)
+        └─ --fix ──► aur-pin-check ──► yay              └─► yay   (fallback, stated)
+                                           aurupdate ──────► yay -Sua
+
+ remove-versioned-kernel    stands alone: pacman -Rns, then the IgnorePkg line
+```
+
+Every arrow into `yay` or `chrootbuild` passes through `aur-pin-check` first.
+Nothing reaches `pacman` except through `pacman` itself: the suite decides what
+to ask for, and pacman decides whether the transaction is sound.
 
 ### Building in a chroot
 
@@ -422,9 +260,132 @@ forever after — never blanket trust.
 byobu  git+https://github.com/dustinkirkland/byobu#tag=7.17  cd6dfa0e4918573e03d9881c7750640693c2d15f
 ```
 
+### Why `SKIP` is rejected
+
+`sha256sums=('SKIP')` is makepkg's way of saying "do not check this source". It
+exists for VCS sources, where there is no file to hash and the commit pin is
+the integrity. makepkg accepts it for any source, though, and a tarball URL
+under `SKIP` is then exactly as mutable as an unpinned branch: the server can
+send something different tomorrow and the build will not notice. Up to 1.7.0
+that walked through the gate, on the stated ground that "sha256sums cover it".
+
+A remote source now has to be verified by something: a real checksum at its own
+position, in the array for its own architecture, or a detached signature
+(`.sig`, `.sign`, `.asc`) listed beside it, which makepkg checks and refuses
+the build without. `cksums` does not count — it is a CRC. A local file is not a
+download: it ships in the AUR repository next to the PKGBUILD and is read with
+it. There is no allowlist row for this one, because a moving download has no
+revision to record; if you have read the PKGBUILD and want it anyway, the
+override is the same as ever — `yay -S <pkg>`, on purpose.
+
 ---
 
-## What this does not do
+## Security model and limitations
+
+Three checks, each of which reads and decides and then gets out of the way:
+`safeup` reads the sync databases, `aur-rebuild-check` reads ELF headers,
+`aur-pin-check` reads `.SRCINFO` and the PKGBUILD as text. None of them runs
+what it inspects, and none of them is the last word — pacman is, for
+transactions, and you are, for PKGBUILDs.
+
+### Nothing here is enforcement
+
+These are wrappers. They sit in `/usr/local/bin` beside the real tools and add
+checks to the commands you run **through them**. They do not hook pacman, do
+not replace `yay`, and do not stop anything:
+
+| You run | What checks it |
+|---|---|
+| `safeup`, `aurinstall`, `aurupdate`, `aur-rebuild-check --fix` | everything on this page |
+| `pacman -Syu`, `pacman -S <pkg>` | pacman's own dependency resolution; no partial-upgrade pre-flight, no rebuild scan |
+| `yay -S <pkg>`, `yay -Syu`, `yay -Sua` | nothing here — no pin check, no checksum check, no chroot |
+| Pamac ("Add/Remove Software"), with or without its AUR switch | nothing here |
+| any other AUR helper, or `makepkg -si` in a clone | nothing here |
+
+That is a decision, not an oversight. A gate that could not be bypassed would
+have to own the package manager, and a tool that owns the package manager is a
+tool you cannot repair the package manager with. A gate you can step around —
+by typing the real command, knowing that you are — is one you will leave
+installed. So the bypass stays, and the cost is yours to manage: **the suite is
+exactly as consistent as your use of it.** Use the aliases from
+[Quick start](#quick-start), and if Pamac is on the machine, leave its AUR
+switch off.
+
+### "But this automates `pacman --ignore`"
+
+It does, and that deserves a real answer rather than reassurance. `--ignore` is
+listed on the Arch wiki as a way to **cause** partial upgrades, so a tool that
+reaches for it automatically is right to be treated with suspicion.
+
+**`--ignore` suppresses an upgrade. It does not suppress dependency
+resolution.** pacman still resolves the entire transaction and refuses one that
+would leave a dependency unsatisfied. Here is that being tested rather than
+asserted — `consumer 1.0` requires `libX=1.0`, both have upgrades pending, and
+`libX` is ignored so that `consumer 2.0` would need a `libX 2.0` that will not
+be installed:
+
+```console
+$ pacman -Syu --noconfirm --ignore libX
+warning: ignoring package libX-2.0-1
+warning: cannot resolve "libX=2.0", a dependency of "consumer"
+error: failed to prepare transaction (could not satisfy dependencies)
+:: unable to satisfy dependency 'libX=2.0' required by consumer
+                                                            exit 1
+
+$ pacman -Q                       # nothing moved
+consumer 1.0-1
+libX 1.0-1
+
+$ pacman -Dk                      # pacman's own consistency audit
+No database errors have been found!
+```
+
+You cannot `--ignore` your way into an unsatisfied dependency. **pacman is the
+backstop, not this script** — which is the correct arrangement, because pacman
+is the thing that actually knows.
+
+That transcript is section 19 of
+[`tests/loopback-core-test.sh`](tests/loopback-core-test.sh) and runs in CI on
+every push, against real pacman transactions. It is deliberately a test of
+*pacman's* behaviour rather than of this code: the safety argument for the whole
+suite rests on that property, nothing here would notice if a future pacman
+changed it, and the consequence would be silent. The same section then asserts
+that a real `safeup` hold inherits it — `pacman -Dk` still reports a consistent
+system afterwards.
+
+Beyond that guarantee, **what** gets held matters:
+
+- It only holds a package from a **foreign** repo whose version-constrained
+  dependency is **already unsatisfiable** — one that cannot install correctly
+  at that moment regardless. A Manjaro repo package is never held.
+- It holds the **new** version back, so the package keeps the dependencies it
+  already had and stays in the state it was already working in. The classic
+  dangerous pattern is pinning a *library* while upgrading its dependents; this
+  is the opposite direction.
+- When a Manjaro upgrade breaks an **AUR** package's dependency
+  (`installing X breaks dependency … required by Y`), the library still goes
+  ahead. The repo upgrade lands in full, with `--assume-installed` standing in
+  for Y's stale dependency, and Y is named for a rebuild; `safeup --aur`
+  rebuilds it straight away. The AUR package is the one that is out of date,
+  so it is the one left broken until it is rebuilt. If Y comes from a repo,
+  the mirrors disagree mid-sync: nothing changes and `safeup` says to wait.
+  (Up to 1.5.0 this path held the library — the very pattern above.)
+- The realistic alternative is not a clean full upgrade. It is a refused
+  transaction, or a person reaching for `--ignore` by hand with worse aim.
+- Every hold, and every AUR package left needing a rebuild, is printed and
+  written to `/var/log/safeup.log`. A silent
+  indefinite pin is the real long-term hazard, so a hold is made into a
+  *deferred* upgrade you can chase rather than a package that quietly stops
+  updating.
+
+**The limitation, stated plainly:** `safeup` does not pre-check whether a
+package it holds is itself required by something else in the same transaction.
+It relies on pacman refusing, and then acts on pacman's own message. The transcript above
+is why that is acceptable — but it works that way because pacman is sound, not
+because this script is clever, and you should know which of those you are
+trusting.
+
+### What this does not do
 
 Stating this plainly is the point of the section. This suite is narrow on
 purpose, and a tool that oversells itself is worse than no tool.
@@ -457,8 +418,10 @@ purpose, and a tool that oversells itself is worse than no tool.
 Up to 1.5.0 the gate skipped repo-carried names that the chroot then built from
 the AUR, never checked AUR dependencies on the yay path, trusted `.SRCINFO`
 without looking at the PKGBUILD, and could not fetch a name with a `+` in it.
-1.6.0 closes all four, with a test for each that fails against 1.5.0. What is
-left is what no static check can close:
+1.6.0 closes all four, with a test for each that fails against 1.5.0. Up to
+1.7.0 a tarball passed on the assumption that its checksum array held a
+checksum; `SKIP` there verifies nothing, and 1.8.0 refuses it. What is left is
+what no static check can close:
 
 - **A hostile maintainer.** The PKGBUILD is now read too, and a `.SRCINFO`
   that hides an unpinned source from it is refused. But a PKGBUILD is code: one
@@ -468,6 +431,9 @@ left is what no static check can close:
 - **The yay path's window.** The gate reads the AUR, then yay fetches it
   again. A push in between is built unseen. The chroot path has no such
   window: it checks the clone it is about to build.
+- **A weak checksum.** `md5sums` and `sha1sums` count as verification, because
+  makepkg treats them as such and forging a file to match an existing digest
+  is still out of reach for either. They are not what you would choose today.
 - **A dependency only another AUR package provides.** It cannot be resolved by
   name, so it is refused, with a hint: install the provider first, then retry.
 
@@ -482,8 +448,8 @@ is no lag to guard against, and none on EndeavourOS, which uses Arch's
 repositories directly.
 
 Runtime dependencies are `pacman`, `curl`, `git`, `awk`, `coreutils` and
-`glibc`'s `ldd` — all of which you already have — plus `fakeroot` (from
-`base-devel`) for `safeup --check`'s no-root database snapshot, `logrotate` for
+`readelf` from `binutils` — all of which a Manjaro install already has — plus
+`fakeroot` (from `base-devel`) for `safeup --check`'s no-root database snapshot, `logrotate` for
 the log rotation, `libnotify` for the drift-audit notification, `yay` for
 `aurinstall` and `aurupdate`, and **`manjaro-chrootbuild`**, which `aurinstall`
 uses to build by default.
@@ -501,11 +467,14 @@ packages installed by that package manager.
 
 ## Testing
 
-Two suites, 120 assertions, both run in CI on every push.
+Three suites. Two are hermetic — 137 assertions, run in CI on every push. The
+third is the opposite on purpose: it runs on a real Manjaro install.
 
 ```bash
-bash tests/pin-fixture-test.sh          # 59 assertions — no root, no disk, no network
-sudo bash tests/loopback-core-test.sh   # 61 assertions — root; touches no real disk
+bash tests/pin-fixture-test.sh            # 71 assertions — no root, no disk, no network
+sudo bash tests/loopback-core-test.sh     # 66 assertions — root; touches no real disk
+bash tests/manjaro-integration-test.sh    # 11 assertions — Manjaro only; no root, changes nothing
+bash tests/manjaro-integration-test.sh --build   # 14 — adds one real chroot build (sudo)
 shellcheck -S warning $(git ls-files '*.sh') bin/*
 ```
 
@@ -517,7 +486,8 @@ the real `repo-add`, and real `.pkg.tar.gz` packages. It then drives the real
 `libfoo>=2.0`, an `installing X breaks dependency … required by Y` transaction,
 an unrecoverable failure — and asserts on installed versions afterwards. The
 `aur-rebuild-check` cases build genuine shared objects with `cc` that carry a
-genuine unresolvable `DT_NEEDED`, so no `ldd` output is faked.
+genuine unresolvable `DT_NEEDED` — and one section puts a recording `ldd` first
+on `PATH` and asserts it is never called.
 
 **No real disk and no real package database is touched.** The only thing on
 `PATH` is a wrapper that adds `--config <throwaway config>`; dependency
@@ -527,6 +497,31 @@ pacman.
 **`tests/pin-fixture-test.sh`** exercises the pinning policy against synthetic
 `.SRCINFO` fixtures and the allowlist against **real local git repositories** —
 including moving a tag and asserting that the next run refuses the package.
+
+**`tests/manjaro-integration-test.sh`** covers what the other two cannot. CI's
+loopback job runs in an Arch container, because that is what GitHub can run;
+it proves pacman's behaviour and this code's, but it never meets Manjaro's own
+`pacman.conf`, `pacman-mirrors`, the `manjaro-chrootbuild` Manjaro actually
+ships, or the live AUR — and every fixture stubs exactly those. This suite
+runs on a real Manjaro install, as an ordinary user, and changes nothing. It
+checks that branch detection answers with a branch `chrootbuild` accepts; that
+the installed `chrootbuild` still takes the flags `aurinstall` passes; that on
+the real `pacman.conf` a repository is called foreign exactly when it is not
+served from the install's Manjaro branch; that `safeup --check` completes
+against the real mirrors and leaves the real sync databases byte-for-byte
+alone; that `aur-rebuild-check` scans every foreign package installed without
+`ldd` running once; and that the gate, against the live AUR, passes a
+checksummed release, rejects a `-git` package, and errors on a name that does
+not exist. With `--build` it also drives the **real** `chrootbuild` to a
+finished package — from a local stand-in for the AUR holding one trivial
+PKGBUILD, so no upstream code is fetched — and confirms the chroot is on the
+branch the install runs rather than `chrootbuild`'s default of `unstable`.
+
+It is not in CI, and that is stated rather than papered over: there is no
+maintained Manjaro container to run it in (`manjarolinux/base` was last built
+in March 2026), and a stale image would test a Manjaro months out of date. Run
+it on a Manjaro install before a release. It refuses to run anywhere else,
+rather than skipping its way to "0 failed".
 
 A check that cannot run in a given environment is reported as `SKIP` and is
 never counted as a pass. A silent pass is the one outcome these suites exist to
@@ -550,7 +545,8 @@ Satyrus-manjaro/
 │   └── aur-pin-check/allowlist.conf  → /etc/aur-pin-check/ (never overwritten)
 ├── config/yay/config.json            → ~/.config/yay/config.json (asked before replacing)
 ├── systemd/user/                     → ~/.config/systemd/user/ (monthly drift audit)
-├── tests/                            the two suites above
+├── tests/                            the three suites above
+├── docs/WHY.md                       the case against Manjaro's release model
 ├── audit-drift.sh                    run in place — never deployed
 └── deploy.sh                         idempotent installer
 ```
@@ -561,6 +557,23 @@ notifies if they diverge, catching the case where someone edits
 allowlist and the yay config are deliberately excluded from that audit: the
 allowlist holds *your* vetting decisions and is supposed to diverge, and the yay
 config is a preference `deploy.sh` asks before replacing.
+
+---
+
+## Why Manjaro's release model creates these problems
+
+The AUR assumes you are current with Arch. Manjaro's Stable branch deliberately
+is not: it trails Arch by about two weeks, while the AUR does not trail at all.
+Third-party repositories and AUR PKGBUILDs are built for an Arch that a Manjaro
+user will not have for another fortnight; things break in the gap, in one
+direction while Manjaro is behind and in the other when it catches up. Manjaro
+ships AUR support in its own package manager and documents the result as "your
+own risk and your own responsibility". Nobody supports the gap. **This suite is
+the gap, handled.**
+
+The full argument — the quotations, Manjaro's record with the AUR and with its
+own certificates, and who answers for it — is in
+[docs/WHY.md](docs/WHY.md).
 
 ---
 

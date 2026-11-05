@@ -77,7 +77,9 @@ against a careless maintainer. Manjaro, in general, is not
 
 ## How it is tested
 
-Both suites run on every push, and neither mocks the thing under test.
+Both hermetic suites run on every push, and neither mocks the thing under
+test. A third runs on a real Manjaro install — real `pacman.conf`, real
+`chrootbuild`, live AUR — because a container on GitHub is not Manjaro.
 
 The loopback suite builds a 512 MB file-backed loop device, formats it, and
 constructs a complete throwaway `pacman` root inside it — private database,
@@ -86,7 +88,8 @@ private `file://` repositories built with the real `repo-add`, real
 scenarios and asserts on installed versions afterwards. Dependency resolution,
 ABI-break detection and transaction ordering are done by pacman, not by a stub.
 The `aur-rebuild-check` cases compile real shared objects with a real
-unresolvable `DT_NEEDED`, so no `ldd` output is faked either.
+unresolvable `DT_NEEDED` — and assert that the scan reads them without ever
+handing one to `ldd`.
 
 The fixture suite proves the allowlist's trust-on-first-use property by
 creating a real git repository, vetting a tag, **moving that tag**, and
