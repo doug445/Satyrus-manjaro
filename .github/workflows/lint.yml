@@ -46,6 +46,12 @@ jobs:
     # touched. Runs in an Arch container because that is where a genuine
     # pacman, repo-add and makepkg toolchain exists; --privileged is required
     # for losetup inside the container.
+    #
+    # Arch is not Manjaro. What only Manjaro can vouch for — its pacman.conf,
+    # pacman-mirrors, manjaro-chrootbuild, and the live AUR — is covered by
+    # tests/manjaro-integration-test.sh, which is NOT run here: there is no
+    # maintained Manjaro image to run it in (manjarolinux/base was last built
+    # in March 2026). It is run on a real Manjaro install before a release.
     runs-on: ubuntu-latest
     container:
       image: archlinux:latest
