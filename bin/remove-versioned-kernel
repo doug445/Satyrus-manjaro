@@ -187,7 +187,9 @@ awk -v remove="${TO_REMOVE[*]}" '
         next
     }
     { print }' "$PACMAN_CONF" > "$PRUNED"
-if cmp -s "$PRUNED" "$PACMAN_CONF"; then
+# In bash, not cmp: diffutils is not on every system, and a missing cmp read as
+# "changed", which rewrote the file and took a backup for nothing.
+if [[ "$(<"$PRUNED")" == "$(<"$PACMAN_CONF")" ]]; then
     echo "[remove] IgnorePkg in $PACMAN_CONF names none of the removed packages — left as-is"
 else
     BACKUP="$PACMAN_CONF.bak-$(date +%Y%m%d-%H%M%S)"
