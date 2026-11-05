@@ -6,15 +6,15 @@ settings someone clicked once and cannot reproduce.
 Apply or re-apply:
 
 ```bash
-gh api --method POST repos/doug445/manjaro-safeaur-updater/rulesets --input .github/rulesets/branch-main.json
-gh api --method POST repos/doug445/manjaro-safeaur-updater/rulesets --input .github/rulesets/tags-release.json
+gh api --method POST repos/doug445/Satyrus-manjaro/rulesets --input .github/rulesets/branch-main.json
+gh api --method POST repos/doug445/Satyrus-manjaro/rulesets --input .github/rulesets/tags-release.json
 ```
 
 List what is live, and read one back:
 
 ```bash
-gh api repos/doug445/manjaro-safeaur-updater/rulesets --jq '.[] | "\(.id)  \(.name)  [\(.target)]  \(.enforcement)"'
-gh api repos/doug445/manjaro-safeaur-updater/rulesets/RULESET_ID --jq '.rules'
+gh api repos/doug445/Satyrus-manjaro/rulesets --jq '.[] | "\(.id)  \(.name)  [\(.target)]  \(.enforcement)"'
+gh api repos/doug445/Satyrus-manjaro/rulesets/RULESET_ID --jq '.rules'
 ```
 
 ## What is enforced
@@ -73,20 +73,20 @@ Send the **whole** ruleset body, not just the changed field — `PUT` replaces t
 ruleset, so a partial update silently drops the rules:
 
 ```bash
-ID=$(gh api repos/doug445/manjaro-safeaur-updater/rulesets --jq '.[] | select(.name=="release tags") | .id')
+ID=$(gh api repos/doug445/Satyrus-manjaro/rulesets --jq '.[] | select(.name=="release tags") | .id')
 
 jq '.enforcement = "disabled"' .github/rulesets/tags-release.json > /tmp/off.json
-gh api --method PUT "repos/doug445/manjaro-safeaur-updater/rulesets/$ID" --input /tmp/off.json
+gh api --method PUT "repos/doug445/Satyrus-manjaro/rulesets/$ID" --input /tmp/off.json
 
 # ... do the thing ...
 
-gh api --method PUT "repos/doug445/manjaro-safeaur-updater/rulesets/$ID" --input .github/rulesets/tags-release.json
+gh api --method PUT "repos/doug445/Satyrus-manjaro/rulesets/$ID" --input .github/rulesets/tags-release.json
 ```
 
 Confirm the rules survived, every time:
 
 ```bash
-gh api "repos/doug445/manjaro-safeaur-updater/rulesets/$ID" --jq '.enforcement, (.rules|map(.type))'
+gh api "repos/doug445/Satyrus-manjaro/rulesets/$ID" --jq '.enforcement, (.rules|map(.type))'
 ```
 
 ## Status

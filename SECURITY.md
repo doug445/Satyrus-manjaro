@@ -1,6 +1,6 @@
 # Security Policy
 
-**Manjaro SafeAUR Updater 1.6.0**
+**Satyrus-manjaro 1.6.0**
  
 ## Supported Versions
 
@@ -15,7 +15,7 @@ receive patches.
 | Newest tagged release | :white_check_mark: |
 | Any earlier tag | :x: upgrade to the newest release |
 
-The [releases page](https://github.com/doug445/manjaro-safeaur-updater/releases) lists
+The [releases page](https://github.com/doug445/Satyrus-manjaro/releases) lists
 every tag, newest first, and each release's notes record what changed in it.
 This project keeps that history in the release notes rather than in a
 `CHANGELOG.md`.
@@ -24,7 +24,7 @@ If you are running a checkout you pulled weeks ago, `git pull` and retry before
 reporting — the issue may already be fixed. Include what you are running:
 
 ```bash
-git -C /path/to/manjaro-safeaur-updater describe --tags --always --dirty
+git -C /path/to/Satyrus-manjaro describe --tags --always --dirty
 ```
 
 A `-dirty` suffix means the working tree has local modifications, and a hash

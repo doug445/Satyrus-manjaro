@@ -5,11 +5,11 @@ body:
   - type: markdown
     attributes:
       value: |
-        Bug reports only — see [CONTRIBUTING.md](https://github.com/doug445/manjaro-safeaur-updater/blob/main/CONTRIBUTING.md).
+        Bug reports only — see [CONTRIBUTING.md](https://github.com/doug445/Satyrus-manjaro/blob/main/CONTRIBUTING.md).
         **Security issues do not go here**; use the private address in
-        [SECURITY.md](https://github.com/doug445/manjaro-safeaur-updater/blob/main/SECURITY.md).
+        [SECURITY.md](https://github.com/doug445/Satyrus-manjaro/blob/main/SECURITY.md).
 
-        Before pasting logs, skim [SECURITY.md § Before you send diagnostics](https://github.com/doug445/manjaro-safeaur-updater/blob/main/SECURITY.md#before-you-send-diagnostics)
+        Before pasting logs, skim [SECURITY.md § Before you send diagnostics](https://github.com/doug445/Satyrus-manjaro/blob/main/SECURITY.md#before-you-send-diagnostics)
         — `pacman.conf` and the allowlist say more about your machine than you may intend.
 
   - type: dropdown
@@ -53,7 +53,7 @@ body:
     id: version
     attributes:
       label: Version
-      description: "`git -C /path/to/manjaro-safeaur-updater describe --tags --always --dirty`"
+      description: "`git -C /path/to/Satyrus-manjaro describe --tags --always --dirty`"
       placeholder: v1.0.0-3-gabc1234-dirty
     validations:
       required: true

@@ -1,6 +1,6 @@
-# Manjaro SafeAUR Updater
+# Satyrus-manjaro
 
-[![lint](https://github.com/doug445/manjaro-safeaur-updater/actions/workflows/lint.yml/badge.svg)](https://github.com/doug445/manjaro-safeaur-updater/actions/workflows/lint.yml)
+[![lint](https://github.com/doug445/Satyrus-manjaro/actions/workflows/lint.yml/badge.svg)](https://github.com/doug445/Satyrus-manjaro/actions/workflows/lint.yml)
 [![License: MIT](https://img.shields.io/badge/License-MIT-yellow.svg)](LICENSE)
 [![Free and open source](https://img.shields.io/badge/Free%20and%20open%20source-brightgreen.svg)](LICENSE)
 [![Shell: bash](https://img.shields.io/badge/shell-bash-4EAA25.svg)](#requirements)
@@ -38,8 +38,8 @@ It is six short bash scripts, no daemon, no runtime dependency beyond pacman,
 coreutils and fakeroot, and 108 tests, 49 of which run real `pacman`
 transactions on a loop device.
 
-**Guides:** [AUR package broken after a Manjaro update](https://doug445.github.io/manjaro-safeaur-updater/aur-package-broken-after-manjaro-update/) ·
-["could not satisfy dependencies" with chaotic-aur or BlackArch](https://doug445.github.io/manjaro-safeaur-updater/manjaro-partial-upgrade-could-not-satisfy-dependencies/)
+**Guides:** [AUR package broken after a Manjaro update](https://doug445.github.io/Satyrus-manjaro/aur-package-broken-after-manjaro-update/) ·
+["could not satisfy dependencies" with chaotic-aur or BlackArch](https://doug445.github.io/Satyrus-manjaro/manjaro-partial-upgrade-could-not-satisfy-dependencies/)
 
 ---
 
@@ -279,8 +279,8 @@ trusting.
 ## Quick start
 
 ```bash
-git clone https://github.com/doug445/manjaro-safeaur-updater.git
-cd manjaro-safeaur-updater
+git clone https://github.com/doug445/Satyrus-manjaro.git
+cd Satyrus-manjaro
 ./deploy.sh
 ```
 
@@ -537,7 +537,7 @@ prevent.
 ## Source-of-record layout
 
 ```
-manjaro-safeaur-updater/
+Satyrus-manjaro/
 ├── bin/                              → /usr/local/bin/ (root:root 0755)
 │   ├── safeup                        pacman -Syu with the partial-upgrade guard
 │   ├── aur-rebuild-check             post-upgrade soname scan
