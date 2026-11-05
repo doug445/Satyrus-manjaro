@@ -73,6 +73,7 @@ RUNTIME_DEPS=(
     "git         git"           # aur-pin-check resolves allowlisted tags
     "fakeroot    fakeroot"      # safeup --check refreshes a private database copy without root
     "awk         gawk"          # .SRCINFO and pacman -Si parsing throughout
+    "cmp         diffutils"     # this script: is a deployed file already correct?
     "readelf     binutils"      # aur-rebuild-check reads ELF dynamic sections; nothing is loaded
     "logrotate   logrotate"     # /etc/logrotate.d/safeup is inert without it
     "notify-send libnotify"     # audit-drift.sh's desktop notification
